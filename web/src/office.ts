@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Entry, State, Thread } from '../../server/office.ts'
+import type { Ask, Entry, State, Thread } from '../../server/office.ts'
 
-export type { Entry, State, Thread }
+export type { Ask, Entry, State, Thread }
 export type Room = { name: string; hidden: boolean }
 type OfficeState = {
   connected: boolean

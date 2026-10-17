@@ -24,7 +24,11 @@ export type Thread = {
   queuedAt: number
   costUsd?: number
   tokens?: number
+  asks: Ask[] // Needs-you requests, oldest first; only live while the run is
 }
+
+export type Question = { question: string; header: string; multiSelect: boolean; options: { label: string; description: string }[] }
+export type Ask = { id: string; tool: string; title: string; detail: string; questions?: Question[]; agentID?: string; at: number }
 
 export type Entry = { at: number; kind: 'user' | 'text' | 'tool' | 'system' | 'error'; text: string }
 
@@ -34,7 +38,9 @@ const defaults: Office = { maxRunning: 6, projectsRoot: 'C:\\Projects\\personal'
 
 export function load(): Office {
   try {
-    return { ...defaults, ...JSON.parse(readFileSync(file, 'utf8')) }
+    const office: Office = { ...defaults, ...JSON.parse(readFileSync(file, 'utf8')) }
+    for (const t of office.threads) t.asks ??= [] // records from before Needs-you
+    return office
   } catch (e: any) {
     if (e.code === 'ENOENT') return structuredClone(defaults)
     throw e

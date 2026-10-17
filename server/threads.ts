@@ -26,7 +26,7 @@ export function toLaunch(threads: Thread[], maxRunning: number): Thread[] {
 // After a restart no process is left, so whatever was running waits for the user.
 export function recover(threads: Thread[]): Thread[] {
   const hit = threads.filter((t) => RUNNING.includes(t.state))
-  for (const t of hit) t.state = 'idle'
+  for (const t of hit) Object.assign(t, { state: 'idle', asks: [] })
   return hit
 }
 
@@ -72,9 +72,16 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     emit({ type: 'entry', id: t.id, entry })
   }
 
+  // Callers update() right after, which publishes the cleared asks.
   function closeRun(t: Thread) {
     runs.get(t.id)?.close()
     runs.delete(t.id)
+    t.asks = []
+  }
+
+  function settle(t: Thread, askId: string) {
+    const asks = t.asks.filter((a) => a.id !== askId)
+    update(t, { asks, state: asks.length === 0 && t.state === 'needs-you' ? 'working' : t.state })
   }
 
   function schedule() {
@@ -112,6 +119,10 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       schedule()
     } else if (e.kind === 'text') log(t, 'text', e.text)
     else if (e.kind === 'tool') log(t, 'tool', `${e.name} ${e.detail}`.trim())
+    else if (e.kind === 'ask') {
+      log(t, 'system', `Needs you: ${e.ask.title}`)
+      update(t, { asks: [...t.asks, e.ask], state: 'needs-you' })
+    } else if (e.kind === 'unask') settle(t, e.id)
     else if (e.kind === 'result') {
       if (interrupted.delete(t.id)) log(t, 'system', 'Interrupted.') // its error is only a diagnostic
       else if (e.error) log(t, 'error', e.error)
@@ -175,7 +186,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
         base: body.base?.trim() || defaultBase(join(office.projectsRoot, body.room)),
         branch: `office/${slug}`,
         worktree: join(office.projectsRoot, '.worktrees', body.room, slug),
-        state: 'queued', ended: false, hasSession: false, inbox: [],
+        state: 'queued', ended: false, hasSession: false, inbox: [], asks: [],
         createdAt: now, queuedAt: now,
       }
       office.threads.push(t)
@@ -188,11 +199,23 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       const t = get(id)
       text = text?.trim()
       if (!text) throw new HttpError(400, 'Message is empty')
-      if (t.ended || !['queued', 'starting', 'working', 'idle'].includes(t.state)) throw new HttpError(409, `Thread is ${t.state}`)
-      log(t, 'user', text)
+      if (t.ended || !['queued', 'starting', 'working', 'needs-you', 'idle'].includes(t.state)) throw new HttpError(409, `Thread is ${t.state}`)
       const r = runs.get(id)
+      if (t.asks.length > 0) return this.answer(id, { ask: t.asks[0].id, allow: false, message: text }) // the composer is Deny with a note
+      log(t, 'user', text)
       if (r) r.send(text) // steering: the SDK runs it after the current step
       else queue(t, text)
+    },
+
+    answer(id: string, body: { ask?: string; allow?: boolean; message?: string; answers?: Record<string, string> }) {
+      const t = get(id)
+      const ask = t.asks.find((a) => a.id === body.ask)
+      if (!ask) throw new HttpError(409, 'That request is no longer waiting')
+      const message = body.message?.trim() || 'The user denied this.'
+      runs.get(id)?.answer(ask.id, body.allow ? { allow: true, answers: body.answers } : { allow: false, message })
+      if (body.answers) log(t, 'user', Object.values(body.answers).join('\n'))
+      else log(t, 'system', body.allow ? `Allowed: ${ask.title}` : `Denied: ${ask.title}${body.message ? ` — ${message}` : ''}`)
+      settle(t, ask.id)
     },
 
     act(id: string, action: string) {
