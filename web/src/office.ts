@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { addActivity, type Activity } from '../../server/activity.ts'
+export { endedNewestFirst } from '../../server/activity.ts'
 import type { Ask, Entry, State, Subagent, Thread } from '../../server/office.ts'
 
 export type { Activity, Ask, Entry, State, Subagent, Thread }

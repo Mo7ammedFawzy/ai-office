@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Campus } from './Campus.tsx'
-import { endedNewestFirst } from '../../server/activity.ts'
-import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Subagent, type Thread } from './office.ts'
+import { endedNewestFirst, post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Subagent, type Thread } from './office.ts'
 import { askerOf } from './campus.ts'
 import type { Ticket } from '../../server/tickets.ts'
 import { ChangesPanel, ChangesSummary, useChanges } from './Changes.tsx'
@@ -63,7 +62,7 @@ export function App() {
                 <button onClick={() => setSelected(t.id)} className="mb-1 block w-full truncate text-left text-xs text-slate-400 hover:text-slate-200">
                   {t.room} · {t.title}
                 </button>
-                {askerOf(t, t.asks[0]) && <div className="mb-1 text-xs text-violet-300">asked by its {askerOf(t, t.asks[0])!.type} Subagent</div>}
+                <AskedBy t={t} ask={t.asks[0]} />
                 <AskCard key={t.asks[0].id} t={t} ask={t.asks[0]} />
                 {t.asks.length > 1 && <div className="mt-1 text-xs text-slate-500">+{t.asks.length - 1} more</div>}
               </div>
@@ -290,7 +289,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         <div className="flex flex-col gap-3 border-b border-amber-500/40 bg-amber-500/5 p-3">
           {t.asks.map((a) => (
             <div key={a.id}>
-              {askerOf(t, a) && <div className="mb-1 text-xs text-violet-300">asked by its {askerOf(t, a)!.type} Subagent</div>}
+              <AskedBy t={t} ask={a} />
               <AskCard t={t} ask={a} />
             </div>
           ))}
@@ -351,6 +350,11 @@ function Subagents({ t }: { t: Thread }) {
       })}
     </section>
   )
+}
+
+function AskedBy({ t, ask }: { t: Thread; ask: Ask }) {
+  const s = askerOf(t, ask)
+  return s ? <div className="mb-1 text-xs text-violet-300">asked by its {s.type} Subagent</div> : null
 }
 
 // One waiting request: Allow/Deny, or option buttons for AskUserQuestion.
