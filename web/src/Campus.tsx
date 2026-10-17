@@ -445,14 +445,14 @@ function Bubble({ t, hover, onSelect }: { t: Thread; hover: boolean; onSelect: (
   return null
 }
 
-// Re-renders every 250 ms while `on`, so lingering Subagents leave on time.
-function useNow(on: boolean) {
+// Re-renders every `ms` while `on`, so lingering Subagents leave on time and clocks tick.
+export function useNow(on: boolean, ms = 250) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     if (!on) return
-    const i = setInterval(() => setNow(Date.now()), 250)
+    const i = setInterval(() => setNow(Date.now()), ms)
     return () => clearInterval(i)
-  }, [on])
+  }, [on, ms])
   return on ? Date.now() : now
 }
 

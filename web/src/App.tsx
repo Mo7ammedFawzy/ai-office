@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Campus } from './Campus.tsx'
+import { Campus, useNow } from './Campus.tsx'
 import { endedNewestFirst, post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Subagent, type Thread } from './office.ts'
 import { askerOf } from './campus.ts'
 import type { Ticket } from '../../server/tickets.ts'
@@ -328,6 +328,7 @@ const SUB_DOT: Record<Subagent['status'], string> = { running: 'bg-violet-400', 
 
 function Subagents({ t }: { t: Thread }) {
   const running = t.subagents.filter((s) => s.status === 'running').length
+  const now = useNow(running > 0, 1000)
   return (
     <section className="flex flex-col gap-1 border-b border-slate-800 p-3 text-xs">
       <h3 className="font-semibold uppercase tracking-wide text-violet-300">Subagents · {running} running</h3>
@@ -343,7 +344,7 @@ function Subagents({ t }: { t: Thread }) {
             <span className="min-w-0 truncate text-slate-500">{s.description}</span>
             <span className="ml-auto min-w-0 truncate text-slate-400">{asking ? 'needs you' : s.summary}</span>
             <span className="shrink-0 font-mono text-[10px] text-slate-600">
-              {s.tools} tools · {Math.round(((s.endedAt ?? Date.now()) - s.startedAt) / 1000)}s
+              {s.tools} tools · {Math.round(((s.endedAt ?? now) - s.startedAt) / 1000)}s
             </span>
           </div>
         )
