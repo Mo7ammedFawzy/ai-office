@@ -1,0 +1,749 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Answers "Office floor layout prototype" (ai-office #10):
+  how is the Office floor laid out as Projects and Thread counts vary — Room placement and size, where desks appear
+  as Threads start and Subagents arrive, Room labels, camera controls, and the flat Top view?
+  Three structurally different floors (?variant=A|B|C), hosted in the Inbox shell picked in #8:
+    A  Campus   — every Room on one floor, alphabetical grid; Rooms grow a row of 3 desks at a time; free orbit/pan/zoom
+    B  One Room — only the focused Room, re-fitted as it grows; tabs switch Rooms; zoom only
+    C  Corridor — Rooms side by side along a hallway, busiest first; Rooms grow sideways; drag/scroll pans along it
+  All share: Room labels on the back wall, 3D/Top toggle (T), Fit, walk-in/out, Subagents standing at the parent's desk,
+  and the Thread drawer pushing the scene left instead of covering it. Prototype-only stress panel (fuchsia) top-right.
+  No build: React + htm from esm.sh, Tailwind play CDN, plain three.js standing in for R3F.
+  Run: npx serve prototype-floor-layout   (Chrome with ignore-gpu-blocklist on)
+-->
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Office</title>
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body { background: #09090b; color: #fafafa; font: 14px system-ui, sans-serif; overflow: hidden; }
+  ::-webkit-scrollbar { width: 8px; height: 8px } ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "react": "https://esm.sh/react@18.3.1",
+  "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1",
+  "react-dom": "https://esm.sh/react-dom@18.3.1?deps=react@18.3.1",
+  "htm": "https://esm.sh/htm@3.1.1"
+} }
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import React, { useState, useReducer, useEffect, useRef, useLayoutEffect } from 'react';
+import { createRoot } from 'react-dom/client';
+import { createPortal } from 'react-dom';
+import htm from 'htm';
+const html = htm.bind(React.createElement);
+
+// ============================== fake Office state ==============================
+let SEQ = 0;
+const clock = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const mk = (kind, text) => ({ kind, text, at: clock(), seq: ++SEQ });
+const RUNNING = ['Starting', 'Working', 'Needs-you'];
+const ENDED = ['Done', 'Stopped'];
+const CAP = 6;
+const slug = p => p.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(' ').filter(Boolean).slice(0, 4).join('-');
+const id4 = () => Math.random().toString(16).slice(2, 6);
+
+const BASES = { 'ai-office': ['master', 'prototype/art-kit'], 'quran-reader': ['main', 'feat/tafsir'], 'blog': ['main', 'draft/r3f-post'] };
+const bases = p => BASES[p] ?? ['main'];
+const MORE_PROJECTS = ['resume-site', 'scraper', 'game-jam', 'notes', 'infra', 'budget-app', 'chess-bot', 'photo-sorter', 'homelab', 'kata'];
+const FILL_TITLES = ['Tidy imports', 'Add a test for the parser', 'Rename helpers', 'Write docs for setup', 'Fix flaky test', 'Bump deps', 'Add loading state', 'Split the big module'];
+
+const genericScript = prompt => [
+  { tool: 'Read', arg: 'AGENTS.md' },
+  { sub: 'Explore — mapping the code around it' },
+  { say: `Plan: ${prompt}. Reading the code around it first.` },
+  { tool: 'Grep', arg: '"export" src/' },
+  { edit: 'src/index.ts', patch: ['@@ -1,3 +1,5 @@', ' import { app } from "./app";', `+// ${prompt}`, '+export const ready = true;', ' app.start();'] },
+  { ask: { kind: 'permission', tool: 'Bash', input: 'pnpm test', reason: 'Shell commands always raise Needs-you.' } },
+  { tool: 'Bash', arg: 'pnpm test → 12 passed' },
+  { end: 'Done: 1 file changed, tests pass. Want a PR?' },
+];
+const replyScript = text => [{ say: 'On it.' }, { edit: 'src/app.ts', patch: ['@@ -10,2 +10,3 @@', ' export function start() {', `+  // ${text.slice(0, 40)}`, ' }'] }, { end: 'Updated as asked.' }];
+
+function thread(o) {
+  const tid = id4();
+  return {
+    id: tid, room: 'ai-office', base: 'master', model: 'sonnet', desk: null, pending: null, since: null, subs: [],
+    diff: [], pr: null, error: null, step: 0, script: genericScript(o.title), endNote: null,
+    branch: `office/${slug(o.title)}-${tid}`, ...o,
+  };
+}
+const initial = () => {
+  const t = [
+    thread({ title: 'Add Room discovery', state: 'Working', desk: 0, subs: [Date.now() + 20000, Date.now() + 26000],
+      transcript: [mk('user', 'Auto-discover git repos under C:\\Projects\\personal as Rooms, with a per-Room hide.'), mk('sub', 'Explore — mapping how Projects are listed today'), mk('sub', 'Explore — reading settings')] }),
+    thread({ title: 'Fix glossary links', state: 'Needs-you', desk: 1, since: Date.now() - 42000,
+      transcript: [mk('user', 'GLOSSARY.md links to docs that moved. Fix them.'), mk('agent', 'Two links point at docs/old/.')],
+      pending: { kind: 'permission', tool: 'Bash', input: 'git mv docs/old/triage.md docs/agents/triage.md', reason: 'Shell commands always raise Needs-you.' },
+      script: [{ tool: 'Bash', arg: 'git mv … → ok' }, { end: 'Links fixed.' }] }),
+    thread({ title: 'Spike the R3F scene', state: 'Working', desk: 2, model: 'opus', transcript: [mk('user', 'Spike a React Three Fiber scene with one Room.')] }),
+    thread({ title: 'Write the README', state: 'Idle', desk: 3, model: 'haiku', transcript: [mk('user', 'Write the README.'), mk('agent', 'README written. Want a PR?')], script: [] }),
+    thread({ title: 'Bump three to 0.170', state: 'Failed', desk: 4, transcript: [mk('user', 'Bump three.'), mk('error', 'error_during_execution: ENOENT pnpm-lock.yaml')], error: 'ENOENT pnpm-lock.yaml' }),
+    thread({ title: 'Add dark theme', state: 'Queued', transcript: [mk('user', 'Add a dark theme toggle.')] }),
+    thread({ room: 'quran-reader', base: 'main', title: 'Add tafsir side-by-side', state: 'Working', desk: 0, transcript: [mk('user', 'Show tafsir next to the ayah.')] }),
+    thread({ room: 'quran-reader', base: 'main', title: 'Fix RTL wrapping', state: 'Idle', desk: 1, transcript: [mk('user', 'Long ayat wrap wrong.'), mk('agent', 'Fixed. Your turn.')], script: [] }),
+    thread({ room: 'blog', base: 'main', title: 'Draft R3F post outline', state: 'Needs-you', desk: 0, since: Date.now() - 120000,
+      transcript: [mk('user', 'Outline a post about the Office scene.')],
+      pending: { kind: 'permission', tool: 'Write', input: 'C:\\Projects\\personal\\ai-office\\notes.md', reason: 'Outside this Thread\'s worktree.' },
+      script: [{ say: 'Writing the outline.' }, { end: 'Outline ready.' }] }),
+  ];
+  const sel = new URLSearchParams(location.search).get('sel');
+  return { threads: t, projects: ['ai-office', 'blog', 'dotfiles', 'quran-reader'], hidden: [], room: 'ai-office', selected: sel ? t[+sel].id : null };
+};
+
+const freeDesk = (threads, room) => { // desks are unbounded now: a Room grows to fit
+  const used = new Set(threads.filter(t => t.room === room && t.desk != null && !ENDED.includes(t.state)).map(t => t.desk));
+  for (let i = 0; ; i++) if (!used.has(i)) return i;
+};
+const slotsUsed = s => s.threads.filter(t => RUNNING.includes(t.state)).length;
+
+function advance(t) {
+  const item = t.script[t.step];
+  if (!item) return { ...t, state: 'Idle', transcript: [...t.transcript, mk('agent', 'Turn finished.')] };
+  t = { ...t, step: t.step + 1 };
+  if (item.tool) return { ...t, transcript: [...t.transcript, mk('tool', `${item.tool} ${item.arg}`)] };
+  if (item.say) return { ...t, transcript: [...t.transcript, mk('agent', item.say)] };
+  if (item.sub) return { ...t, subs: [...t.subs, Date.now() + 14000], transcript: [...t.transcript, mk('sub', item.sub)] };
+  if (item.edit) return { ...t, diff: [...t.diff.filter(d => d.file !== item.edit), { file: item.edit, patch: item.patch }], transcript: [...t.transcript, mk('tool', `Edit ${item.edit}`)] };
+  if (item.ask) return { ...t, state: 'Needs-you', pending: item.ask, since: Date.now() };
+  if (item.end) return { ...t, state: 'Idle', transcript: [...t.transcript, mk('agent', item.end)] };
+  return t;
+}
+
+function reducer(s, a) {
+  const upd = (id, f) => ({ ...s, threads: s.threads.map(t => t.id === id ? f(t) : t) });
+  const resume = (t, extra) => {
+    const free = slotsUsed(s) < CAP;
+    return { ...t, ...extra, state: free ? 'Starting' : 'Queued', desk: t.desk ?? (free ? freeDesk(s.threads, t.room) : null) };
+  };
+  switch (a.type) {
+    case 'tick': {
+      let used = slotsUsed(s);
+      const now = Date.now();
+      const threads = s.threads.map(t => {
+        if (t.subs.length && t.subs.some(x => x < now)) t = { ...t, subs: t.subs.filter(x => x >= now) };
+        if (t.state === 'Starting') return { ...t, state: 'Working' };
+        if (t.state === 'Working' && Math.random() < 0.45) return advance(t);
+        if (t.state === 'Queued' && used < CAP) { used++; return { ...t, state: 'Starting', desk: t.desk ?? freeDesk(s.threads, t.room), transcript: [...t.transcript, mk('system', 'Slot free — worktree created, starting.')] }; }
+        return t;
+      });
+      return { ...s, threads };
+    }
+    case 'room': return { ...s, room: a.room };
+    case 'select': {
+      const t = s.threads.find(t => t.id === a.id);
+      return { ...s, selected: a.id, room: t ? t.room : s.room };
+    }
+    case 'allow': return upd(a.id, t => ({ ...t, state: 'Working', pending: null, since: null, transcript: [...t.transcript, mk('system', `✓ Allowed: ${t.pending.tool} ${t.pending.input}`)] }));
+    case 'deny': return upd(a.id, t => ({ ...t, state: 'Working', pending: null, since: null, step: t.step + 1, transcript: [...t.transcript, mk('system', `✕ Denied: ${t.pending.tool}`)] }));
+    case 'answer': return upd(a.id, t => ({ ...t, state: 'Working', pending: null, since: null, transcript: [...t.transcript, mk('user', a.option)] }));
+    case 'send': return upd(a.id, t => {
+      const msg = mk('user', a.text);
+      if (t.state === 'Working') return { ...t, transcript: [...t.transcript, { ...msg, steer: true }] };
+      if (t.state === 'Needs-you') return { ...t, state: 'Working', pending: null, since: null, transcript: [...t.transcript, mk('system', `✕ Denied: ${t.pending.tool ?? 'question'}`), msg] };
+      return resume(t, { transcript: [...t.transcript, msg], script: [...t.script.slice(0, t.step), ...replyScript(a.text)] });
+    });
+    case 'interrupt': return upd(a.id, t => ({ ...t, state: 'Idle', pending: null, transcript: [...t.transcript, mk('system', 'Interrupted.')] }));
+    case 'stop': return upd(a.id, t => ({ ...t, state: 'Stopped', pending: null, subs: [], endNote: 'Branch kept', transcript: [...t.transcript, mk('system', 'Stopped by you.')] }));
+    case 'done': return upd(a.id, t => ({ ...t, state: 'Done', subs: [], endNote: 'Branch kept · worktree removed (clean)', transcript: [...t.transcript, mk('system', 'Marked done.')] }));
+    case 'retry': return upd(a.id, t => resume(t, { error: null, transcript: [...t.transcript, mk('system', 'Retrying.')] }));
+    case 'end': return upd(a.id, t => ({ ...t, state: 'Stopped', endNote: 'Ended after failure · branch kept', transcript: [...t.transcript, mk('system', 'Ended.')] }));
+    case 'discard': return { ...s, selected: null, threads: s.threads.filter(t => t.id !== a.id) };
+    case 'new': {
+      const free = slotsUsed(s) < CAP;
+      const t = thread({ room: a.room, title: a.prompt.split(/[.\n]/)[0].slice(0, 40), base: a.base, model: a.model,
+        state: free ? 'Starting' : 'Queued', desk: free ? freeDesk(s.threads, a.room) : null,
+        transcript: [mk('user', a.prompt)], script: genericScript(a.prompt.slice(0, 40)) });
+      return { ...s, threads: [...s.threads, t], room: a.room };
+    }
+    // ---- prototype-only stress controls ----
+    case 'addProject': { const p = MORE_PROJECTS.find(p => !s.projects.includes(p)); return p ? { ...s, projects: [...s.projects, p].sort() } : s; }
+    case 'removeProject': {
+      const p = [...s.projects].reverse().find(p => MORE_PROJECTS.includes(p)); if (!p) return s;
+      return { ...s, projects: s.projects.filter(x => x !== p), threads: s.threads.filter(t => t.room !== p), room: s.room === p ? 'ai-office' : s.room };
+    }
+    case 'fill': {
+      let threads = s.threads;
+      for (let i = 0; i < a.n; i++) threads = [...threads, thread({ room: a.room, base: bases(a.room)[0], title: FILL_TITLES[(i + threads.length) % FILL_TITLES.length],
+        state: 'Idle', desk: freeDesk(threads, a.room), transcript: [mk('user', '(stress filler)'), mk('agent', 'Turn finished. Your turn.')], script: [] })];
+      return { ...s, threads };
+    }
+    case 'endSome': { // end two Threads in the focused Room so you can watch desks free up
+      const ids = s.threads.filter(t => t.room === s.room && !ENDED.includes(t.state) && t.state !== 'Needs-you').slice(-2).map(t => t.id);
+      return { ...s, threads: s.threads.map(t => ids.includes(t.id) ? { ...t, state: 'Done', subs: [] } : t) };
+    }
+    case 'sub': {
+      const cands = s.threads.filter(t => RUNNING.includes(t.state));
+      const t = cands.find(t => t.id === s.selected) ?? cands.find(t => t.room === s.room) ?? cands[0]; if (!t) return s;
+      return upd(t.id, t => ({ ...t, subs: [...t.subs, Date.now() + 12000], transcript: [...t.transcript, mk('sub', 'general-purpose — spawned')] }));
+    }
+    case 'hide': return { ...s, hidden: [...s.hidden, a.room], room: s.room === a.room ? s.projects.find(p => p !== a.room && !s.hidden.includes(p)) : s.room };
+    case 'unhide': return { ...s, hidden: s.hidden.filter(r => r !== a.room) };
+  }
+  return s;
+}
+
+// ============================== scene (three.js) ==============================
+// Plain three.js stand-in for the R3F scene. GPU budget from #6: pixel ratio 1, AA on, ~30 fps cap, no shadows.
+const CHAR_FILES = ['male-a', 'female-a', 'male-b', 'female-b', 'male-c', 'female-c', 'female-d'].map(c => `assets/mini/character-${c}.glb`);
+const FURN = ['desk', 'chairDesk', 'computerScreen', 'computerKeyboard', 'floorFull', 'wall', 'wallWindow', 'wallDoorway', 'pottedPlant'];
+const loader = new GLTFLoader();
+const assets = (async () => {
+  const [f, c] = await Promise.all([Promise.all(FURN.map(n => loader.loadAsync(`assets/furniture/${n}.glb`))), Promise.all(CHAR_FILES.map(u => loader.loadAsync(u)))]);
+  const furn = Object.fromEntries(FURN.map((n, i) => {
+    const s = f[i].scene, b = new THREE.Box3().setFromObject(s), ctr = b.getCenter(new THREE.Vector3());
+    s.position.set(-ctr.x, -b.min.y, -ctr.z); const g = new THREE.Group(); g.add(s); return [n, g];
+  }));
+  return { furn, chars: c };
+})();
+const hash = s => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0);
+const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+
+// A Room is `cols` desks wide and `rows` desks deep; it always shows its empty desks, and grows when they're all taken.
+const shape = (cols, rows) => {
+  const seats = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) seats.push([1 + 1.4 * c, 1.4 + 2 * r]);
+  return { cols, rows, w: Math.ceil(1.4 * cols + 0.8), d: 2 * rows + 1, seats };
+};
+const rowsFor = (need, cols, min) => Math.ceil(Math.max(need, min) / cols);
+const LAYOUTS = {
+  A(rooms) { // campus: every Room, alphabetical, in a near-square grid; a full Room adds a row of 3 desks and pushes the grid row below down
+    const per = Math.ceil(Math.sqrt(rooms.length)), out = []; let oz = 0;
+    for (let i = 0; i < rooms.length; i += per) {
+      const row = rooms.slice(i, i + per).map(r => ({ ...r, ...shape(3, rowsFor(r.need, 3, 3)) }));
+      row.forEach((r, j) => out.push({ ...r, ox: j * 7, oz }));
+      oz += Math.max(...row.map(r => r.d)) + 2.5;
+    }
+    return out;
+  },
+  B(rooms, focus) { // one Room: squarish, grows in both directions
+    const r = rooms.find(r => r.name === focus) ?? rooms[0]; if (!r) return [];
+    const cols = Math.max(3, Math.ceil(Math.sqrt(r.need * 1.5)));
+    return [{ ...r, ...shape(cols, rowsFor(r.need, cols, 3)), ox: 0, oz: 0 }];
+  },
+  C(rooms) { // corridor: one row of Rooms, busiest first; every Room is 2 desks deep and grows sideways
+    const sorted = [...rooms].sort((a, b) => b.needs - a.needs || b.open - a.open || a.name.localeCompare(b.name));
+    let ox = 0;
+    return sorted.map(r => { const s = shape(Math.max(2, Math.ceil(r.need / 2)), 2), o = { ...r, ...s, ox, oz: 0 }; ox += s.w + 2; return o; });
+  },
+};
+const ISO = V3(10, 10, 10), FRONT = V3(0, 12, 11), TOP = V3(0, 20, 0.01);
+const roomBox = (L, pad = 0.6) => new THREE.Box3(V3(L.ox - 1 - pad, 0, L.oz - pad), V3(L.ox + L.w + pad, 1.8, L.oz + L.d + pad));
+
+function mountScene(el, cb) {
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'low-power' });
+  renderer.setPixelRatio(1);
+  el.appendChild(renderer.domElement);
+  const labels = new CSS2DRenderer();
+  Object.assign(labels.domElement.style, { position: 'absolute', inset: '0', pointerEvents: 'none' });
+  el.appendChild(labels.domElement);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color('#1c1f26');
+  scene.add(new THREE.HemisphereLight('#fff6e8', '#5a6070', 2.2));
+  const sun = new THREE.DirectionalLight('#fff', 1.6); sun.position.set(4, 8, 3); scene.add(sun);
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
+  camera.position.copy(ISO);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.screenSpacePanning = false; controls.minZoom = 0.15; controls.maxZoom = 5;
+  let aspect = 1;
+  const resize = () => {
+    const w = el.clientWidth, h = el.clientHeight; if (!w || !h) return; aspect = w / h;
+    Object.assign(camera, { left: -4 * aspect, right: 4 * aspect, top: 4, bottom: -4 }); camera.updateProjectionMatrix();
+    renderer.setSize(w, h); labels.setSize(w, h);
+  };
+  const ro = new ResizeObserver(resize); ro.observe(el); resize();
+
+  const anchors = new Map();
+  const anchorFor = id => { if (!anchors.has(id)) anchors.set(id, document.createElement('div')); return anchors.get(id); };
+  const RING = new THREE.RingGeometry(0.22, 0.28, 32);
+  const ringMat = c => new THREE.MeshBasicMaterial({ color: c, side: THREE.DoubleSide });
+  let A = null, P = null, layout = [], byName = {}, layoutKey = '', roomGroups = [], floors = [];
+  const chars = new Map();
+  let prev = {}, goal = null;
+
+  // ---- camera ----
+  const dirFor = () => P.top ? TOP : P.variant === 'C' ? FRONT : ISO;
+  const tmp = new THREE.OrthographicCamera();
+  function fitTo(box, pad = 0.92) {
+    if (box.isEmpty()) return;
+    const ctr = box.getCenter(V3()); ctr.y = 0;
+    const pos = ctr.clone().add(dirFor());
+    tmp.position.copy(pos); tmp.up.set(0, 1, 0); tmp.lookAt(ctr); tmp.updateMatrixWorld();
+    let hw = 0.1, hh = 0.1;
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+      const p = V3(x, y, z).applyMatrix4(tmp.matrixWorldInverse); hw = Math.max(hw, Math.abs(p.x)); hh = Math.max(hh, Math.abs(p.y));
+    }
+    goal = { target: ctr, pos, zoom: Math.min(4 * aspect / hw, 4 / hh) * pad };
+  }
+  const floorBox = () => layout.reduce((b, L) => b.union(roomBox(L)), new THREE.Box3());
+  const corridorBox = L => { const b = roomBox(L); b.min.x -= 5; b.max.x += 5; return b; };
+  controls.addEventListener('start', () => { goal = null; });
+  function configureControls() {
+    const v = P.variant;
+    controls.enabled = v !== 'C';
+    controls.enableRotate = v === 'A' && !P.top;
+    controls.enablePan = v === 'A';
+    controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+    controls.maxPolarAngle = 1.25;
+  }
+  // Corridor: drag or wheel pans along the hallway only; Ctrl+wheel zooms.
+  let down = null, moved = 0;
+  const panX = px => {
+    const dx = -px * (camera.right - camera.left) / camera.zoom / el.clientWidth;
+    const lo = layout[0]?.ox ?? 0, hi = layout.length ? layout.at(-1).ox + layout.at(-1).w : 0;
+    const nx = THREE.MathUtils.clamp(controls.target.x + dx, lo, hi), d = nx - controls.target.x;
+    controls.target.x += d; camera.position.x += d; goal = null;
+  };
+  renderer.domElement.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; moved = 0; });
+  addEventListener('pointerup', () => { down = null; });
+  renderer.domElement.addEventListener('pointermove', e => {
+    if (!down) return; moved += Math.abs(e.movementX) + Math.abs(e.movementY);
+    if (P?.variant === 'C') panX(e.movementX);
+  });
+  renderer.domElement.addEventListener('wheel', e => {
+    if (P?.variant !== 'C') return; e.preventDefault();
+    if (e.ctrlKey) { camera.zoom = THREE.MathUtils.clamp(camera.zoom * (e.deltaY > 0 ? 0.9 : 1.1), 0.3, 4); camera.updateProjectionMatrix(); goal = null; }
+    else panX(-(e.deltaX || e.deltaY) * 0.6);
+  }, { passive: false });
+
+  // ---- rooms ----
+  function buildRooms() {
+    for (const g of roomGroups) scene.remove(g);
+    roomGroups = []; floors = [];
+    for (const L of layout) {
+      const g = new THREE.Group(); g.position.set(L.ox, 0, L.oz);
+      const put = (n, x, z, r = 0) => { const o = A.furn[n].clone(); o.position.set(x, 0, z); o.rotation.y = r; g.add(o); return o; };
+      for (let x = 0; x < L.w; x++) for (let z = 0; z < L.d; z++) { const f = put('floorFull', x + 0.5, z + 0.5); f.traverse(o => { o.userData.room = L.name; }); floors.push(f); }
+      for (let x = 0; x < L.w; x++) put(x % 3 === 1 ? 'wallWindow' : 'wall', x + 0.5, 0);
+      const door = Math.floor(L.d / 2);
+      for (let z = 0; z < L.d; z++) put(z === door ? 'wallDoorway' : 'wall', 0, z + 0.5, Math.PI / 2);
+      put('pottedPlant', L.w - 0.35, 0.35);
+      for (const [x, z] of L.seats) {
+        put('desk', x, z, Math.PI);
+        put('computerScreen', x, z + 0.1).position.y = 0.38;
+        put('computerKeyboard', x, z - 0.08).position.y = 0.38;
+        put('chairDesk', x, z - 0.42);
+      }
+      const label = new CSS2DObject(anchorFor('room:' + L.name)); label.position.set(0.3, 0, L.d + 0.35); g.add(label); // front-left corner: clear of back-row bubbles
+      scene.add(g); roomGroups.push(g);
+    }
+  }
+
+  // ---- characters ----
+  function makeChar(seed, pickId, height) {
+    const g = A.chars[Math.abs(hash(seed)) % A.chars.length];
+    const root = SkeletonUtils.clone(g.scene);
+    const box = new THREE.Box3().setFromObject(g.scene), s = height / (box.max.y - box.min.y);
+    const holder = new THREE.Group(); holder.add(root); root.scale.setScalar(s); root.position.y = -box.min.y * s;
+    const mixer = new THREE.AnimationMixer(root), bones = {};
+    root.traverse(o => { bones[o.name] = o; o.userData.id = pickId; });
+    const armBase = ['arm-left', 'arm-right'].filter(n => bones[n]).map(n => [bones[n], bones[n].quaternion.clone()]);
+    const sel = new THREE.Mesh(RING, ringMat('#fafafa')); sel.rotation.x = -Math.PI / 2; sel.position.y = 0.015; sel.scale.setScalar(1.25); sel.visible = false; holder.add(sel);
+    if (seed === pickId) { const label = new CSS2DObject(anchorFor(pickId)); label.position.y = 0.95; holder.add(label); }
+    scene.add(holder);
+    return { holder, mixer, bones, armBase, sel, gltf: g, clipName: null, phase: Math.random() * 10, path: [], dest: null };
+  }
+  const setClip = (c, n) => { if (c.clipName === n) return; c.mixer.stopAllAction(); const clip = THREE.AnimationClip.findByName(c.gltf.animations, n); if (clip) c.mixer.clipAction(clip).play(); c.clipName = n; };
+  const doorOf = L => { const z = L.oz + Math.floor(L.d / 2) + 0.5; return { inside: V3(L.ox + 0.5, 0, z), outside: V3(L.ox - 0.8, 0, z) }; };
+
+  // where a Thread's Character belongs right now: { pos, rot, seated }
+  function spotFor(t, L, queueIdx) {
+    if (t.state !== 'Queued' && t.desk != null && L.seats[t.desk]) {
+      const [x, z] = L.seats[t.desk]; return { pos: V3(L.ox + x, 0.08, L.oz + z - 0.38), rot: 0, seated: true };
+    }
+    const d = doorOf(L).inside; return { pos: V3(d.x + 0.05 + 0.4 * queueIdx, 0, d.z), rot: Math.PI / 2, seated: false };
+  }
+  function place(c, spot, L, fromDoor) { // set where c should end up; walk there if walking is on and the Room was already on screen
+    if (c.dest && c.dest.distanceTo(spot.pos) < 0.01 && c.rot === spot.rot) return;
+    c.dest = spot.pos; c.rot = spot.rot; c.seated = spot.seated; c.arrived = false;
+    if (!P.walk || !fromDoor && !c.walked) { c.holder.position.copy(spot.pos); c.path = []; c.walked = true; return; }
+    const d = doorOf(L);
+    const aisle = spot.pos.z - 0.52;
+    c.path = fromDoor
+      ? [d.inside, ...(spot.seated ? [V3(d.inside.x, 0, aisle), V3(spot.pos.x, 0, aisle)] : []), spot.pos]
+      : [V3(c.holder.position.x, 0, c.holder.position.z - (c.seated ? 0.5 : 0)), ...(spot.seated ? [V3(spot.pos.x, 0, aisle)] : []), spot.pos];
+    c.path = c.path.map(p => p.clone());
+  }
+  function leave(id, c) {
+    const L = byName[c.room];
+    if (!P.walk || !L) { scene.remove(c.holder); chars.delete(id); return; }
+    if (c.leaving) return;
+    const d = doorOf(L);
+    c.leaving = true; c.arrived = false;
+    c.path = [V3(c.holder.position.x, 0, c.holder.position.z - 0.5), d.inside.clone(), d.outside.clone()];
+  }
+
+  function update(p) {
+    P = p; if (!A) return;
+    configureControls();
+    const old = byName;
+    layout = LAYOUTS[p.variant](p.rooms, p.focus);
+    byName = Object.fromEntries(layout.map(L => [L.name, L]));
+    const key = JSON.stringify(layout.map(L => [L.name, L.ox, L.oz, L.cols, L.rows]));
+    const relaid = key !== layoutKey;
+    if (relaid) { buildRooms(); layoutKey = key; }
+
+    // characters: shift with their Room if it moved, then (re)place
+    const live = new Set();
+    for (const t of p.threads) {
+      const L = byName[t.room]; if (!L || ENDED.includes(t.state)) continue;
+      const queued = p.threads.filter(q => q.room === t.room && q.state === 'Queued');
+      const spot = spotFor(t, L, Math.max(0, queued.indexOf(t)));
+      let c = chars.get(t.id);
+      const warm = !!old[t.room];
+      if (!c) {
+        c = makeChar(t.id, t.id, 0.62); c.room = t.room; chars.set(t.id, c);
+        if (warm && p.walk) { c.holder.position.copy(doorOf(L).outside); c.walked = true; place(c, spot, L, true); }
+        else place(c, spot, L, false);
+      } else {
+        const O = old[t.room];
+        if (O && (O.ox !== L.ox || O.oz !== L.oz)) { const d = V3(L.ox - O.ox, 0, L.oz - O.oz); c.holder.position.add(d); c.path.forEach(q => q.add(d)); c.dest?.add(d); }
+        if (!O) { c.walked = false; c.dest = null; }
+        place(c, spot, L, false);
+      }
+      c.leaving = false; live.add(t.id);
+      c.role = t.state === 'Working' || t.state === 'Starting' ? 'typing' : t.state === 'Needs-you' ? 'hand' : 'still';
+      c.sel.visible = t.id === p.selected;
+      // Subagents: smaller Characters standing beside the parent's desk, no desk of their own
+      t.subs.slice(0, 3).forEach((_, i) => {
+        const sid = `${t.id}~${i}`; live.add(sid);
+        let sc = chars.get(sid);
+        const sspot = { pos: spot.pos.clone().add(V3(0.55 + 0.32 * i, -0.08, 0.1)), rot: -0.5, seated: false };
+        if (!sc) { sc = makeChar(sid, t.id, 0.42); sc.room = t.room; sc.sub = true; chars.set(sid, sc); sc.holder.position.copy(warm && p.walk ? doorOf(L).inside : sspot.pos); sc.walked = true; place(sc, sspot, L, false); }
+        else { const O = old[t.room]; if (O && (O.ox !== L.ox || O.oz !== L.oz)) { const d = V3(L.ox - O.ox, 0, L.oz - O.oz); sc.holder.position.add(d); sc.path.forEach(q => q.add(d)); } place(sc, sspot, L, false); }
+        sc.leaving = false; sc.role = 'still';
+      });
+    }
+    for (const [id, c] of chars) if (!live.has(id)) { if (!byName[c.room]) { scene.remove(c.holder); chars.delete(id); } else leave(id, c); }
+
+    // camera
+    const first = prev.variant === undefined;
+    if (first || prev.variant !== p.variant || prev.top !== p.top || prev.fitN !== p.fitN) {
+      if (p.variant === 'C') { const L = byName[p.focus] ?? layout[0]; L && fitTo(corridorBox(L)); }
+      else fitTo(floorBox());
+      if (first && goal) { camera.position.copy(goal.pos); controls.target.copy(goal.target); camera.zoom = goal.zoom; camera.updateProjectionMatrix(); goal = null; controls.update(); }
+    } else if (prev.focus !== p.focus) {
+      const L = byName[p.focus]; if (L) fitTo(p.variant === 'C' ? corridorBox(L) : roomBox(L));
+    } else if (p.variant === 'B' && relaid) fitTo(floorBox());
+    prev = { variant: p.variant, top: p.top, fitN: p.fitN, focus: p.focus };
+  }
+
+  assets.then(a => { A = a; if (P) update(P); });
+
+  const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
+  renderer.domElement.addEventListener('click', e => {
+    if (moved > 6) return; // that was a drag
+    const r = renderer.domElement.getBoundingClientRect();
+    ptr.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ptr, camera);
+    const hit = ray.intersectObjects([...chars.values()].map(c => c.holder), true).find(h => h.object.userData.id);
+    if (hit) return cb.onPick(hit.object.userData.id);
+    const f = ray.intersectObjects(floors, true).find(h => h.object.userData.room);
+    if (f) cb.onRoom(f.object.userData.room);
+    cb.onPick(null);
+  });
+
+  const zAxis = V3(0, 0, 1);
+  let lastT = 0, t = 0, raf, frames = 0, statT = 0;
+  const tick = now => {
+    raf = requestAnimationFrame(tick);
+    if (now - lastT < 1000 / 30 - 1) return; // ~30 fps cap
+    const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now; t += dt;
+    if (goal) {
+      const k = 1 - Math.exp(-dt * 7);
+      camera.position.lerp(goal.pos, k); controls.target.lerp(goal.target, k);
+      camera.zoom += (goal.zoom - camera.zoom) * k; camera.updateProjectionMatrix();
+      if (camera.position.distanceTo(goal.pos) < 0.01 && Math.abs(camera.zoom - goal.zoom) < 0.002) goal = null;
+      camera.lookAt(controls.target);
+    }
+    if (controls.enabled) controls.update(); else camera.lookAt(controls.target);
+    for (const [id, c] of chars) {
+      if (c.path.length) {
+        const nxt = c.path[0], v = V3(nxt.x - c.holder.position.x, 0, nxt.z - c.holder.position.z), dist = v.length();
+        if (dist > 0.02) { c.holder.position.addScaledVector(v.normalize(), Math.min(dist, 1.7 * dt)); c.holder.position.y = 0; c.holder.rotation.y = Math.atan2(v.x, v.z); setClip(c, 'walk'); }
+        else { c.path.shift(); if (!c.path.length && c.leaving) { scene.remove(c.holder); chars.delete(id); continue; } }
+      } else if (!c.arrived && c.dest) { c.holder.position.copy(c.dest); c.holder.rotation.y = c.rot; c.arrived = true; }
+      if (!c.path.length && !c.leaving) setClip(c, c.seated ? 'sit' : 'idle');
+      for (const [b, q] of c.armBase) { b.quaternion.copy(q); b.scale.setScalar(1); }
+      c.mixer.update(dt);
+      const L = c.bones['arm-left'], R = c.bones['arm-right'];
+      if (!L || !R || c.path.length) continue;
+      if (c.role === 'typing') { const k = Math.sin((t + c.phase) * 14) * 0.12; L.rotateOnAxis(zAxis, 0.9 + k); R.rotateOnAxis(zAxis, 0.9 - k); }
+      if (c.role === 'hand') { L.quaternion.copy(c.armBase[0][1]); L.scale.setScalar(2); L.rotateOnAxis(zAxis, 1.2 + Math.sin((t + c.phase) * 6) * 0.25); }
+    }
+    renderer.render(scene, camera); labels.render(scene, camera);
+    frames++;
+    if (now - statT > 1000) { cb.onStats({ fps: Math.round(frames * 1000 / (now - statT)), draws: renderer.info.render.calls, tris: renderer.info.render.triangles, chars: chars.size }); frames = 0; statT = now; }
+  };
+  raf = requestAnimationFrame(tick);
+  return { update, anchorFor, dispose: () => { cancelAnimationFrame(raf); ro.disconnect(); renderer.dispose(); el.innerHTML = ''; } };
+}
+
+function Scene({ style, view, threads, rooms, bubble, label, onPick, onRoom, onStats }) {
+  const el = useRef(), sc = useRef(), [ready, setReady] = useState(false);
+  const cb = useRef({}); cb.current = { onPick, onRoom, onStats };
+  useEffect(() => { sc.current = mountScene(el.current, { onPick: id => cb.current.onPick(id), onRoom: r => cb.current.onRoom(r), onStats: s => cb.current.onStats(s) }); setReady(true); return () => sc.current.dispose(); }, []);
+  useLayoutEffect(() => { sc.current?.update({ ...view, threads, rooms }); }, [view, threads, rooms, ready]);
+  return html`<div className="absolute inset-y-0 left-0 transition-[right] duration-200" style=${style}><div className="relative h-full w-full overflow-hidden">
+    <div ref=${el} className="absolute inset-0"></div>
+    ${ready && threads.filter(t => !ENDED.includes(t.state)).map(t => createPortal(
+      html`<div className="pointer-events-auto -translate-y-1/2" onClick=${e => { e.stopPropagation(); onPick(t.id); }}>${bubble(t)}</div>`,
+      sc.current.anchorFor(t.id), t.id))}
+    ${ready && rooms.map(r => createPortal(label(r), sc.current.anchorFor('room:' + r.name), 'room:' + r.name))}
+  </div></div>`;
+}
+
+// ============================== shared bits (shadcn-ish, from #8) ==============================
+const STATE_STYLE = {
+  'Queued': 'bg-violet-500/15 text-violet-300 border-violet-500/30', 'Starting': 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+  'Working': 'bg-sky-500/15 text-sky-300 border-sky-500/30', 'Needs-you': 'bg-amber-500 text-black border-amber-400 font-semibold',
+  'Idle': 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30', 'Failed': 'bg-red-500/15 text-red-300 border-red-500/30',
+  'Done': 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30', 'Stopped': 'bg-zinc-700/30 text-zinc-400 border-zinc-600/30',
+};
+const DOT = { 'Queued': 'bg-violet-400', 'Starting': 'bg-sky-400', 'Working': 'bg-sky-400 animate-pulse', 'Needs-you': 'bg-amber-400', 'Idle': 'bg-zinc-400', 'Failed': 'bg-red-400', 'Done': 'bg-emerald-400', 'Stopped': 'bg-zinc-600' };
+const Pill = ({ state }) => html`<span className=${'inline-flex items-center rounded-md border px-1.5 py-0.5 text-[11px] leading-none whitespace-nowrap ' + STATE_STYLE[state]}>${state}</span>`;
+const Dot = ({ state }) => html`<span className=${'inline-block h-2 w-2 shrink-0 rounded-full ' + DOT[state]}></span>`;
+const BTN = {
+  default: 'bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-700', primary: 'bg-zinc-100 hover:bg-white text-zinc-900',
+  amber: 'bg-amber-500 hover:bg-amber-400 text-black font-medium', ghost: 'hover:bg-zinc-800 text-zinc-300', danger: 'bg-red-600/90 hover:bg-red-500 text-white',
+};
+const Btn = ({ kind = 'default', size = 'sm', className = '', ...p }) =>
+  html`<button ...${p} className=${`inline-flex items-center justify-center gap-1 rounded-md ${size === 'xs' ? 'h-6 px-2 text-xs' : 'h-8 px-3 text-sm'} transition-colors disabled:opacity-40 ${BTN[kind]} ${className}`} />`;
+const waited = t => { if (!t.since) return ''; const s = Math.floor((Date.now() - t.since) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const stats = t => t.diff.reduce((a, d) => { for (const l of d.patch) { if (l[0] === '+') a.add++; if (l[0] === '-') a.del++; } return a; }, { add: 0, del: 0 });
+const needing = s => s.threads.filter(t => t.state === 'Needs-you').sort((a, b) => a.since - b.since);
+const visible = s => s.projects.filter(p => !s.hidden.includes(p));
+
+function Pending({ t, api, compact }) {
+  const p = t.pending; if (!p) return null;
+  const stop = e => e.stopPropagation();
+  if (p.kind === 'question') return html`<div onClick=${stop} className="rounded-lg border border-amber-500/60 bg-amber-500/10 p-3 text-sm">
+    <div className="font-medium text-amber-300">${p.question}</div>
+    <div className="mt-2 flex flex-wrap gap-1.5">${p.options.map(o => html`<${Btn} key=${o} size="xs" onClick=${() => api.answer(t.id, o)}>${o}</${Btn}>`)}</div></div>`;
+  return html`<div onClick=${stop} className="rounded-lg border border-amber-500/60 bg-amber-500/10 p-3 text-sm">
+    <div className="flex items-center justify-between gap-2"><span className="font-medium text-amber-300">Wants to ${p.tool === 'Bash' ? 'run' : p.tool.toLowerCase()}</span>${!compact && html`<span className="text-[11px] text-amber-200/70">waiting ${waited(t)}</span>`}</div>
+    <code className="mt-1.5 block break-all rounded bg-black/50 px-2 py-1 font-mono text-xs text-zinc-200">${p.input}</code>
+    ${!compact && html`<div className="mt-1.5 text-xs text-zinc-400">${p.reason}</div>`}
+    <div className="mt-2 flex gap-1.5"><${Btn} size="xs" kind="amber" onClick=${() => api.allow(t.id)}>Allow</${Btn}><${Btn} size="xs" onClick=${() => api.deny(t.id)}>Deny</${Btn}></div></div>`;
+}
+
+function Transcript({ t }) {
+  const ref = useRef();
+  useEffect(() => { ref.current && (ref.current.scrollTop = ref.current.scrollHeight); }, [t.transcript.length]);
+  return html`<div ref=${ref} className="flex-1 min-h-0 overflow-y-auto space-y-2 p-3 text-sm">
+    ${t.transcript.map(e => {
+      if (e.kind === 'user') return html`<div key=${e.seq} className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2"><span className="text-xs text-zinc-500">${e.steer ? 'You (steer)' : 'You'} · ${e.at}</span><div>${e.text}</div></div>`;
+      if (e.kind === 'agent') return html`<div key=${e.seq} className="text-zinc-200">${e.text}</div>`;
+      if (e.kind === 'tool') return html`<div key=${e.seq} className="font-mono text-xs text-zinc-500">⏺ ${e.text}</div>`;
+      if (e.kind === 'sub') return html`<div key=${e.seq} className="text-xs text-violet-300">◆ Subagent ${e.text}</div>`;
+      if (e.kind === 'error') return html`<div key=${e.seq} className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 font-mono text-xs text-red-300">${e.text}</div>`;
+      return html`<div key=${e.seq} className="text-center text-xs italic text-zinc-500">${e.text}</div>`;
+    })}
+    ${t.state === 'Working' && html`<div className="text-xs text-sky-300 animate-pulse">working…</div>`}
+  </div>`;
+}
+
+function Changes({ t }) {
+  const st = stats(t);
+  return html`<div className="space-y-2 p-3 text-sm">
+    <div className="font-mono text-xs"><span className="text-zinc-100">${t.branch}</span> <span className="text-zinc-500">← ${t.base}</span> · <span className="text-emerald-400">+${st.add}</span> <span className="text-red-400">−${st.del}</span></div>
+    ${t.diff.length === 0 && html`<div className="text-xs text-zinc-500">No changes yet.</div>`}
+    ${t.diff.map(d => html`<details key=${d.file} open className="rounded-lg border border-zinc-800 overflow-hidden">
+      <summary className="cursor-pointer bg-zinc-900 px-3 py-1.5 font-mono text-xs">${d.file}</summary>
+      <pre className="overflow-x-auto bg-black/40 text-[11px] leading-5">${d.patch.map((l, i) => html`<div key=${i} className=${'px-3 ' + (l[0] === '+' ? 'bg-emerald-500/10 text-emerald-300' : l[0] === '-' ? 'bg-red-500/10 text-red-300' : l[0] === '@' ? 'text-sky-400' : 'text-zinc-400')}>${l}</div>`)}</pre>
+    </details>`)}
+  </div>`;
+}
+
+function Composer({ t, api }) {
+  const [v, setV] = useState('');
+  if (ENDED.includes(t.state)) return null;
+  const send = () => { if (!v.trim()) return; api.send(t.id, v.trim()); setV(''); };
+  return html`<div className="border-t border-zinc-800 p-2"><div className="flex items-end gap-2 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5">
+    <textarea rows="1" value=${v} onChange=${e => setV(e.target.value)} onKeyDown=${e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+      placeholder=${t.state === 'Working' ? 'Steer this Thread…' : 'Reply…'} className="flex-1 resize-none bg-transparent px-1.5 py-1 text-sm outline-none placeholder:text-zinc-500" />
+    <${Btn} size="xs" kind="primary" onClick=${send}>Send</${Btn}></div></div>`;
+}
+
+function Actions({ t, api }) {
+  return html`<div className="flex flex-wrap gap-1.5">
+    ${t.state === 'Working' && html`<${Btn} size="xs" onClick=${() => api.interrupt(t.id)}>Interrupt</${Btn}>`}
+    ${t.state === 'Idle' && html`<${Btn} size="xs" onClick=${() => api.done(t.id)}>Mark done</${Btn}>`}
+    ${t.state === 'Failed' && html`<${Btn} size="xs" kind="primary" onClick=${() => api.retry(t.id)}>Retry</${Btn}><${Btn} size="xs" onClick=${() => api.end(t.id)}>End</${Btn}>`}
+    ${!ENDED.includes(t.state) && t.state !== 'Failed' && html`<${Btn} size="xs" kind="ghost" onClick=${() => api.stop(t.id)}>Stop</${Btn}>`}
+    ${ENDED.includes(t.state) && html`<${Btn} size="xs" kind="danger" onClick=${() => api.discard(t.id)}>Discard</${Btn}>`}
+  </div>`;
+}
+
+function NewThreadForm({ s, api }) {
+  const [room, setRoom] = useState(s.room), [prompt, setPrompt] = useState(''), [base, setBase] = useState(bases(s.room)[0]);
+  useEffect(() => { setRoom(s.room); setBase(bases(s.room)[0]); }, [s.room]);
+  const free = slotsUsed(s) < CAP;
+  const submit = () => { if (!prompt.trim()) return; api.newThread({ room, prompt: prompt.trim(), base, model: 'sonnet' }); setPrompt(''); };
+  const sel = 'h-7 rounded-md border border-zinc-700 bg-zinc-900 px-1.5 text-xs';
+  return html`<div className="space-y-2">
+    <textarea rows="2" value=${prompt} onChange=${e => setPrompt(e.target.value)} onKeyDown=${e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit(); }}
+      placeholder=${`What should a new Thread do in ${room}?`} className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-900 p-2 text-sm outline-none focus:border-zinc-500 placeholder:text-zinc-500" />
+    <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-400">
+      <select className=${sel} value=${room} onChange=${e => { setRoom(e.target.value); setBase(bases(e.target.value)[0]); }}>${visible(s).map(p => html`<option key=${p}>${p}</option>`)}</select>
+      <span>from</span>
+      <select className=${sel} value=${base} onChange=${e => setBase(e.target.value)}>${bases(room).map(b => html`<option key=${b}>${b}</option>`)}</select>
+      <span className="ml-auto">${free ? `${slotsUsed(s)}/${CAP} · starts now` : 'will queue'}</span>
+      <${Btn} size="xs" kind="primary" onClick=${submit}>Start</${Btn}>
+    </div></div>`;
+}
+
+const RoomTabs = ({ s, api, className = '' }) => html`<div className=${'flex flex-wrap gap-1 ' + className}>
+  ${visible(s).map(r => { const n = s.threads.filter(t => t.room === r && t.state === 'Needs-you').length;
+    return html`<button key=${r} onClick=${() => api.room(r)} className=${'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ' + (s.room === r ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-800/60')}>${r}${n > 0 && html`<span className="rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-black">${n}</span>`}</button>`; })}
+</div>`;
+
+// ============================== the Inbox shell (#8) hosting the floor variants ==============================
+function Office({ s, api, variant }) {
+  const [top, setTop] = useState(false), [walk, setWalk] = useState(true), [fitN, setFitN] = useState(0), [st, setSt] = useState(null);
+  const sel = s.threads.find(t => t.id === s.selected);
+  const needs = needing(s);
+  const feed = s.threads.flatMap(t => t.transcript.map(e => ({ e, t }))).sort((a, b) => b.e.seq - a.e.seq).slice(0, 40);
+  useEffect(() => {
+    const k = e => { if (e.target.closest('input,textarea,select,[contenteditable]')) return; if (e.key === 't' || e.key === 'T') setTop(x => !x); };
+    addEventListener('keydown', k); return () => removeEventListener('keydown', k);
+  }, []);
+
+  const shown = variant === 'B' ? [s.room] : visible(s);
+  const rooms = shown.map(name => {
+    const live = s.threads.filter(t => t.room === name && !ENDED.includes(t.state));
+    return { name, open: live.length, needs: live.filter(t => t.state === 'Needs-you').length, need: Math.max(0, ...live.filter(t => t.desk != null).map(t => t.desk + 1)) };
+  });
+  const threads = s.threads.filter(t => shown.includes(t.room));
+  const roomsKey = JSON.stringify(rooms);
+  const roomsMemo = React.useMemo(() => rooms, [roomsKey]);
+  const view = React.useMemo(() => ({ variant, top, walk, fitN, focus: s.room, selected: s.selected }), [variant, top, walk, fitN, s.room, s.selected]);
+
+  const bubble = t => {
+    if (t.state === 'Needs-you') return html`<div className="relative mb-3 w-56 cursor-pointer rounded-xl bg-zinc-950/95 p-1 shadow-xl ring-2 ring-amber-500">
+      <div className="px-2 pt-1 text-[11px] text-amber-300">${t.title}</div>
+      <${Pending} t=${t} api=${api} compact />
+      <div className="absolute -bottom-2 left-1/2 h-4 w-4 -translate-x-1/2 rotate-45 bg-zinc-950 ring-2 ring-amber-500 [clip-path:polygon(100%_0,100%_100%,0_100%)]"></div></div>`;
+    if (t.state === 'Failed') return html`<div className="cursor-pointer rounded-full bg-red-600 px-2 text-[10px] font-bold">failed</div>`;
+    if (t.state === 'Idle') return html`<div className="cursor-pointer rounded-full bg-zinc-800/90 px-2 text-[10px] text-zinc-300">…your turn</div>`;
+    if (t.subs.length > 3) return html`<div className="rounded-full bg-violet-600 px-1.5 text-[10px] font-bold">+${t.subs.length - 3} subagents</div>`;
+    return null;
+  };
+  const label = r => html`<div className=${'pointer-events-auto flex translate-x-1/3 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-xs shadow ' + (s.room === r.name ? 'bg-zinc-100 text-zinc-900' : 'bg-zinc-950/85 text-zinc-200 ring-1 ring-zinc-700')}>
+    <button className="font-semibold" onClick=${() => api.room(r.name)}>${r.name}</button>
+    <span className="opacity-60">· ${r.open} open thread${r.open === 1 ? '' : 's'}</span>
+    ${r.needs > 0 && html`<span className="rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-black">${r.needs} need you</span>`}
+    <button title="Hide this Room" className="opacity-40 hover:opacity-100" onClick=${() => api.hide(r.name)}>✕</button>
+  </div>`;
+
+  const counts = ['Working', 'Needs-you', 'Idle', 'Queued', 'Failed'];
+  const scope = variant === 'B' ? s.threads.filter(t => t.room === s.room) : s.threads.filter(t => visible(s).includes(t.room));
+  return html`<div className="flex h-full">
+    <aside className="flex w-[340px] shrink-0 flex-col border-r border-zinc-800 bg-zinc-950">
+      <div className="flex items-center gap-2 border-b border-zinc-800 p-3"><span className="font-semibold">AI Office</span><span className="ml-auto text-xs text-zinc-500">${slotsUsed(s)}/${CAP} running</span></div>
+      <div className="border-b border-zinc-800 p-3"><${NewThreadForm} s=${s} api=${api} /></div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="p-3 space-y-2">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-400">Needs you <span className="rounded-full bg-amber-500 px-1.5 text-black">${needs.length}</span></div>
+          ${needs.length === 0 && html`<div className="text-xs text-zinc-500">Nothing waiting on you.</div>`}
+          ${needs.map(t => html`<div key=${t.id} className="rounded-lg border border-zinc-800 bg-zinc-900 p-2 space-y-1.5">
+            <button onClick=${() => api.select(t.id)} className="flex w-full items-center gap-2 text-left text-xs"><span className="text-zinc-500">${t.room}</span><span className="truncate font-medium">${t.title}</span><span className="ml-auto text-amber-300">${waited(t)}</span></button>
+            <${Pending} t=${t} api=${api} compact /></div>`)}
+        </div>
+        <div className="p-3 pt-1 space-y-1">
+          <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Activity</div>
+          ${feed.map(({ e, t }) => html`<button key=${e.seq} onClick=${() => api.select(t.id)} className="block w-full truncate rounded px-1 py-0.5 text-left text-xs hover:bg-zinc-800/60">
+            <span className="text-zinc-600">${e.at.slice(-5)}</span> <span className="text-zinc-400">${t.title}</span> <span className=${e.kind === 'error' ? 'text-red-400' : e.kind === 'sub' ? 'text-violet-300' : 'text-zinc-500'}>${e.text}</span></button>`)}
+        </div>
+      </div>
+    </aside>
+    <main className="relative min-w-0 flex-1">
+      <${Scene} style=${{ right: sel ? 460 : 0 }} view=${view} threads=${threads} rooms=${roomsMemo} bubble=${bubble} label=${label}
+        onPick=${id => id ? api.select(id) : api.select(null)} onRoom=${api.room} onStats=${setSt} />
+      <div className="pointer-events-none absolute left-3 top-3 flex max-w-[60%] flex-col gap-2">
+        <${RoomTabs} s=${s} api=${api} className="pointer-events-auto rounded-lg bg-zinc-950/80 p-1" />
+        <div className="flex flex-wrap gap-1.5 text-xs">
+          ${counts.map(c => html`<span key=${c} className="flex items-center gap-1 rounded-md bg-zinc-950/80 px-2 py-1"><${Dot} state=${c} />${scope.filter(t => t.state === c).length} ${c.toLowerCase()}</span>`)}
+          ${s.hidden.map(r => html`<button key=${r} onClick=${() => api.unhide(r)} className="pointer-events-auto rounded-md border border-dashed border-zinc-600 bg-zinc-950/80 px-2 py-1 text-zinc-400 hover:text-white">${r} hidden · show</button>`)}
+        </div>
+      </div>
+      <div className="absolute bottom-16 flex gap-1 rounded-lg bg-zinc-950/85 p-1 text-xs transition-[right] duration-200" style=${{ right: (sel ? 460 : 0) + 12 }}>
+        ${[['3D', false], ['Top', true]].map(([l, v]) => html`<button key=${l} onClick=${() => setTop(v)} className=${'rounded px-2 py-1 ' + (top === v ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-300 hover:bg-zinc-800')}>${l}</button>`)}
+        <button onClick=${() => setFitN(n => n + 1)} className="rounded px-2 py-1 text-zinc-300 hover:bg-zinc-800">${variant === 'C' ? 'Back to focus' : 'Fit'}</button>
+      </div>
+      <div className="absolute top-3 z-20 w-56 space-y-1.5 rounded-lg border-2 border-fuchsia-300/70 bg-zinc-950/90 p-2 text-xs transition-[right] duration-200" style=${{ right: (sel ? 460 : 0) + 12 }}>
+        <div className="font-semibold text-fuchsia-200">Prototype stress panel</div>
+        <div className="flex items-center gap-1">Rooms <${Btn} size="xs" onClick=${api.removeProject}>−</${Btn}><b>${s.projects.length}</b><${Btn} size="xs" onClick=${api.addProject}>+</${Btn}></div>
+        <div className="flex flex-wrap gap-1"><${Btn} size="xs" onClick=${() => api.fill(s.room, 3)}>+3 Threads in ${s.room}</${Btn}><${Btn} size="xs" onClick=${api.endSome}>End 2</${Btn}><${Btn} size="xs" onClick=${api.sub}>+ Subagent</${Btn}></div>
+        <label className="flex items-center gap-1.5"><input type="checkbox" checked=${walk} onChange=${e => setWalk(e.target.checked)} /> Walk in / out</label>
+        ${st && html`<div className="font-mono text-[10px] text-zinc-400">${st.fps} fps · ${st.draws} draws · ${(st.tris / 1000).toFixed(0)}k tris · ${st.chars} chars</div>`}
+        <div className="text-[10px] text-zinc-500">T toggles Top · ${variant === 'A' ? 'drag pans, right-drag rotates, wheel zooms' : variant === 'B' ? 'wheel zooms; tabs switch Rooms' : 'drag/wheel scrolls the corridor, Ctrl+wheel zooms'}</div>
+      </div>
+      ${sel && html`<div className="absolute inset-y-0 right-0 z-30 flex w-[460px] flex-col border-l border-zinc-800 bg-zinc-950 shadow-2xl">
+        <div className="border-b border-zinc-800 p-3 space-y-1.5">
+          <div className="flex items-center gap-2"><span className="truncate font-semibold">${sel.title}</span><${Pill} state=${sel.state} /><${Btn} size="xs" kind="ghost" className="ml-auto" onClick=${() => api.select(null)}>✕</${Btn}></div>
+          <div className="font-mono text-[11px] text-zinc-500">${sel.room} · ${sel.branch} ← ${sel.base} · ${sel.model}${sel.subs.length ? ` · ${sel.subs.length} subagent${sel.subs.length === 1 ? '' : 's'}` : ''}</div>
+          <${Actions} t=${sel} api=${api} />
+        </div>
+        ${sel.pending && html`<div className="border-b border-zinc-800 p-2"><${Pending} t=${sel} api=${api} /></div>`}
+        <${Transcript} t=${sel} />
+        <details className="max-h-[40%] overflow-y-auto border-t border-zinc-800"><summary className="cursor-pointer px-3 py-2 text-sm text-zinc-300">Changes · ${sel.diff.length} files</summary><${Changes} t=${sel} /></details>
+        <${Composer} t=${sel} api=${api} />
+      </div>`}
+    </main>
+  </div>`;
+}
+
+// ============================== app + switcher ==============================
+const VARIANTS = { A: 'Campus', B: 'One Room', C: 'Corridor' };
+const KEYS = Object.keys(VARIANTS);
+
+function Switcher({ v, set }) {
+  const cycle = d => set(KEYS[(KEYS.indexOf(v) + d + KEYS.length) % KEYS.length]);
+  useEffect(() => {
+    const k = e => { if (e.target.closest('input,textarea,select,[contenteditable]')) return; if (e.key === 'ArrowLeft') cycle(-1); if (e.key === 'ArrowRight') cycle(1); };
+    addEventListener('keydown', k); return () => removeEventListener('keydown', k);
+  });
+  return html`<div className="fixed bottom-3 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full bg-fuchsia-200 px-2 py-1 text-sm font-semibold text-black shadow-xl">
+    <button className="h-7 w-7 rounded-full bg-black text-white" onClick=${() => cycle(-1)}>←</button>
+    <span>${v} (${VARIANTS[v]})</span>
+    <button className="h-7 w-7 rounded-full bg-black text-white" onClick=${() => cycle(1)}>→</button>
+  </div>`;
+}
+
+function App() {
+  const qs = new URLSearchParams(location.search);
+  const [v, setV] = useState(KEYS.includes(qs.get('variant')) ? qs.get('variant') : 'A');
+  const [s, dispatch] = useReducer(reducer, null, initial);
+  useEffect(() => { const i = setInterval(() => dispatch({ type: 'tick' }), 1800); return () => clearInterval(i); }, []);
+  const n = needing(s).length;
+  useEffect(() => { document.title = n ? `(${n}) AI Office` : 'AI Office'; }, [n]);
+  const set = k => { qs.set('variant', k); history.replaceState(null, '', '?' + qs); setV(k); };
+  const d = (type, o = {}) => dispatch({ type, ...o });
+  const api = {
+    select: id => d('select', { id }), room: room => d('room', { room }),
+    allow: id => d('allow', { id }), deny: (id, note) => d('deny', { id, note }), answer: (id, option) => d('answer', { id, option }), send: (id, text) => d('send', { id, text }),
+    interrupt: id => d('interrupt', { id }), stop: id => d('stop', { id }), done: id => d('done', { id }), retry: id => d('retry', { id }), end: id => d('end', { id }), discard: id => d('discard', { id }),
+    newThread: o => d('new', o), hide: room => d('hide', { room }), unhide: room => d('unhide', { room }),
+    addProject: () => d('addProject'), removeProject: () => d('removeProject'), fill: (room, n) => d('fill', { room, n }), endSome: () => d('endSome'), sub: () => d('sub'),
+  };
+  return html`<${React.Fragment}><${Office} key=${v} s=${s} api=${api} variant=${v} /><${Switcher} v=${v} set=${set} /></${React.Fragment}>`;
+}
+createRoot(document.getElementById('root')).render(html`<${App} />`);
+</script>
+</body>
+</html>
