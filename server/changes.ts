@@ -1,11 +1,9 @@
 // A Thread's Changes: what its branch adds on top of the Base branch, uncommitted work included.
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { git } from './git.ts'
 
 export type FileDiff = { path: string; added: number; removed: number; patch: string }
 export type Diff = { files: FileDiff[]; added: number; removed: number }
-
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 })
 
 // `git diff --no-index` exits 1 when the files differ; that is its answer, not a failure.
 function gitDiffNoIndex(cwd: string, path: string) {

@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { run, type Run, type RunnerEvent, type SubEvent } from './agent-runner.ts'
 import { diff, prUrl } from './changes.ts'
+import { git, tryGit } from './git.ts'
 import { appendEntry, readEntries, removeEntries, save, type Entry, type Office, type State, type Subagent, type Thread } from './office.ts'
 import { appendComment, listTickets, ticketPrompt } from './tickets.ts'
 
@@ -69,21 +69,12 @@ export function usageTracker(start: Usage) {
   }
 }
 
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-const tryGit = (cwd: string, ...args: string[]) => {
-  try {
-    return git(cwd, ...args)
-  } catch {
-    return undefined
-  }
-}
 const errorText = (e: any) => String(e?.stderr || e?.message || e).trim()
 
-function defaultBase(repo: string) {
+function defaultBase(checkout: string) {
   return (
-    tryGit(repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD') ??
-    ['main', 'master'].find((b) => tryGit(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`)) ??
+    tryGit(checkout, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')?.trim() ??
+    ['main', 'master'].find((b) => tryGit(checkout, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`)) ??
     'HEAD'
   )
 }
@@ -241,12 +232,12 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       const model = body.model || 'sonnet'
       if (!body.room || !rooms().includes(body.room)) throw new HttpError(400, 'Unknown Project')
       if (!MODELS.includes(model)) throw new HttpError(400, 'Unknown model')
-      const repo = join(office.projectsRoot, body.room)
-      const base = body.base?.trim() || defaultBase(repo)
+      const checkout = join(office.projectsRoot, body.room)
+      const base = body.base?.trim() || defaultBase(checkout)
       // Only listed Tickets: the path names a file we read and write.
-      const ticket = body.ticket ? listTickets(repo).find((x) => x.path === body.ticket) : undefined
+      const ticket = body.ticket ? listTickets(checkout).find((x) => x.path === body.ticket) : undefined
       if (body.ticket && !ticket) throw new HttpError(400, 'No such Ticket')
-      const prompt = ticket ? ticketPrompt(repo, ticket.path, base, body.prompt ?? '') : body.prompt?.trim()
+      const prompt = ticket ? ticketPrompt(checkout, ticket.path, base, body.prompt ?? '') : body.prompt?.trim()
       if (!prompt) throw new HttpError(400, 'Prompt is empty')
       const id = randomUUID()
       const title = (ticket?.title ?? prompt.split('\n')[0]).slice(0, 60)

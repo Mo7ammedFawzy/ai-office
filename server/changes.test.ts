@@ -9,26 +9,26 @@ import { diff } from './changes.ts'
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' })
 
 test('diff covers base...branch plus uncommitted and untracked work, with totals', () => {
-  const repo = mkdtempSync(join(tmpdir(), 'office-changes-'))
+  const checkout = mkdtempSync(join(tmpdir(), 'office-changes-'))
   try {
-    git(repo, 'init', '-q', '-b', 'main')
-    git(repo, 'config', 'user.email', 't@t')
-    git(repo, 'config', 'user.name', 't')
-    writeFileSync(join(repo, 'a.txt'), 'one\n--two\nthree\n')
-    writeFileSync(join(repo, 'b.txt'), 'keep\n')
-    git(repo, 'add', '.')
-    git(repo, 'commit', '-qm', 'base')
-    git(repo, 'checkout', '-qb', 'office/x')
-    writeFileSync(join(repo, 'a.txt'), 'one\n++two\nthree\nfour\n') // committed: -1 +2, lines that look like ---/+++ headers
-    git(repo, 'commit', '-qam', 'work')
-    git(repo, 'checkout', '-q', 'main')
-    writeFileSync(join(repo, 'b.txt'), 'main moved on\n') // only on base: not part of the Thread's changes
-    git(repo, 'commit', '-qam', 'main')
-    git(repo, 'checkout', '-q', 'office/x')
-    writeFileSync(join(repo, 'b.txt'), 'keep\nmore\n') // uncommitted: +1
-    writeFileSync(join(repo, 'new file.txt'), 'x\ny\n') // untracked: +2
+    git(checkout, 'init', '-q', '-b', 'main')
+    git(checkout, 'config', 'user.email', 't@t')
+    git(checkout, 'config', 'user.name', 't')
+    writeFileSync(join(checkout, 'a.txt'), 'one\n--two\nthree\n')
+    writeFileSync(join(checkout, 'b.txt'), 'keep\n')
+    git(checkout, 'add', '.')
+    git(checkout, 'commit', '-qm', 'base')
+    git(checkout, 'checkout', '-qb', 'office/x')
+    writeFileSync(join(checkout, 'a.txt'), 'one\n++two\nthree\nfour\n') // committed: -1 +2, lines that look like ---/+++ headers
+    git(checkout, 'commit', '-qam', 'work')
+    git(checkout, 'checkout', '-q', 'main')
+    writeFileSync(join(checkout, 'b.txt'), 'main moved on\n') // only on base: not part of the Thread's changes
+    git(checkout, 'commit', '-qam', 'main')
+    git(checkout, 'checkout', '-q', 'office/x')
+    writeFileSync(join(checkout, 'b.txt'), 'keep\nmore\n') // uncommitted: +1
+    writeFileSync(join(checkout, 'new file.txt'), 'x\ny\n') // untracked: +2
 
-    const d = diff(repo, 'main')
+    const d = diff(checkout, 'main')
     assert.deepEqual(
       d.files.map((f) => [f.path, f.added, f.removed]),
       [['a.txt', 2, 1], ['b.txt', 1, 0], ['new file.txt', 2, 0]],
@@ -38,10 +38,10 @@ test('diff covers base...branch plus uncommitted and untracked work, with totals
     assert.match(d.files[0].patch, /\n---two\n\+\+\+two\n/)
 
     // Worktree gone (ended Thread): the branch alone, from the main checkout.
-    git(repo, 'stash', '-qu')
-    git(repo, 'checkout', '-q', 'main')
-    assert.deepEqual(diff(repo, 'main', 'office/x').files.map((f) => [f.path, f.added, f.removed]), [['a.txt', 2, 1]])
+    git(checkout, 'stash', '-qu')
+    git(checkout, 'checkout', '-q', 'main')
+    assert.deepEqual(diff(checkout, 'main', 'office/x').files.map((f) => [f.path, f.added, f.removed]), [['a.txt', 2, 1]])
   } finally {
-    rmSync(repo, { recursive: true, force: true })
+    rmSync(checkout, { recursive: true, force: true })
   }
 })

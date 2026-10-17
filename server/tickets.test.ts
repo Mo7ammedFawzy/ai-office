@@ -31,44 +31,44 @@ test('parseTicket reads title, Status and Blocked-by', () => {
 })
 
 test('listTickets lists .scratch/<feature>/issues/*.md sorted by feature then file', () => {
-  const repo = mkdtempSync(join(tmpdir(), 'tickets-'))
-  write(repo, '.scratch/zeta/issues/01-a.md', ticket('ready-for-agent', 'None'))
-  write(repo, '.scratch/alpha/issues/02-b.md', '# 02: B\n\nStatus: done\n')
-  write(repo, '.scratch/alpha/issues/01-c.md', 'no heading')
-  write(repo, '.scratch/alpha/spec.md', '# not a ticket')
-  write(repo, '.scratch/alpha/issues/notes.txt', 'not a ticket')
-  write(repo, '.scratch/loose.md', '# not a ticket')
-  assert.deepEqual(listTickets(repo), [
+  const checkout = mkdtempSync(join(tmpdir(), 'tickets-'))
+  write(checkout, '.scratch/zeta/issues/01-a.md', ticket('ready-for-agent', 'None'))
+  write(checkout, '.scratch/alpha/issues/02-b.md', '# 02: B\n\nStatus: done\n')
+  write(checkout, '.scratch/alpha/issues/01-c.md', 'no heading')
+  write(checkout, '.scratch/alpha/spec.md', '# not a ticket')
+  write(checkout, '.scratch/alpha/issues/notes.txt', 'not a ticket')
+  write(checkout, '.scratch/loose.md', '# not a ticket')
+  assert.deepEqual(listTickets(checkout), [
     { path: '.scratch/alpha/issues/01-c.md', feature: 'alpha', title: '01-c', status: undefined, blockedBy: undefined },
     { path: '.scratch/alpha/issues/02-b.md', feature: 'alpha', title: '02: B', status: 'done', blockedBy: undefined },
     { path: '.scratch/zeta/issues/01-a.md', feature: 'zeta', title: '04: Validate API input', status: 'ready-for-agent', blockedBy: undefined },
   ])
-  assert.deepEqual(listTickets(join(repo, 'nope')), []) // no .scratch at all
+  assert.deepEqual(listTickets(join(checkout, 'nope')), []) // no .scratch at all
 })
 
 test('ticketPrompt points at the file unless the main checkout differs from the Base tip', () => {
-  const repo = mkdtempSync(join(tmpdir(), 'tickets-git-'))
-  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false', ...args], { cwd: repo, stdio: 'ignore' })
+  const checkout = mkdtempSync(join(tmpdir(), 'tickets-git-'))
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false', ...args], { cwd: checkout, stdio: 'ignore' })
   const path = '.scratch/f/issues/01-x.md'
   git('init', '-q', '-b', 'main')
-  write(repo, path, '# 01: X\n\nStatus: ready-for-agent\n')
+  write(checkout, path, '# 01: X\n\nStatus: ready-for-agent\n')
   git('add', '.')
   git('commit', '-q', '-m', 'ticket')
   const pointer = 'Work on the Ticket at `.scratch/f/issues/01-x.md`. Read it and the `spec.md` beside it, and follow AGENTS.md.'
 
-  assert.equal(ticketPrompt(repo, path, 'main', ''), pointer)
-  assert.equal(ticketPrompt(repo, path, 'main', ' Keep it small. '), `${pointer}\n\nKeep it small.`)
-  write(repo, path, '# 01: X\r\n\r\nStatus: ready-for-agent\r\n') // only line endings differ (autocrlf checkouts)
-  assert.equal(ticketPrompt(repo, path, 'main', ''), pointer)
+  assert.equal(ticketPrompt(checkout, path, 'main', ''), pointer)
+  assert.equal(ticketPrompt(checkout, path, 'main', ' Keep it small. '), `${pointer}\n\nKeep it small.`)
+  write(checkout, path, '# 01: X\r\n\r\nStatus: ready-for-agent\r\n') // only line endings differ (autocrlf checkouts)
+  assert.equal(ticketPrompt(checkout, path, 'main', ''), pointer)
 
-  write(repo, path, '# 01: X\n\nStatus: ready-for-agent\nEdited, not committed.\n')
-  const pasted = ticketPrompt(repo, path, 'main', 'Extra.')
+  write(checkout, path, '# 01: X\n\nStatus: ready-for-agent\nEdited, not committed.\n')
+  const pasted = ticketPrompt(checkout, path, 'main', 'Extra.')
   assert.match(pasted, /^Work on this Ticket \(`\.scratch\/f\/issues\/01-x\.md`/)
   assert.ok(pasted.includes('Edited, not committed.'))
   assert.ok(pasted.endsWith('\n\nExtra.'))
 
-  write(repo, '.scratch/f/issues/02-new.md', '# 02: New\n') // not on the Base branch at all
-  assert.ok(ticketPrompt(repo, '.scratch/f/issues/02-new.md', 'main', '').includes('# 02: New'))
+  write(checkout, '.scratch/f/issues/02-new.md', '# 02: New\n') // not on the Base branch at all
+  assert.ok(ticketPrompt(checkout, '.scratch/f/issues/02-new.md', 'main', '').includes('# 02: New'))
 })
 
 test('appendComment adds lines under ## Comments and never touches Status', () => {

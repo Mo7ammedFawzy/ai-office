@@ -1,6 +1,6 @@
-import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { tryGit } from './git.ts'
 
 export type Ticket = { path: string; feature: string; title: string; status?: string; blockedBy?: string }
 
@@ -16,22 +16,14 @@ export function parseTicket(text: string) {
   }
 }
 
-// The Base tip's copy of a file, or undefined when it has none.
-function atBase(repo: string, base: string, path: string) {
-  try {
-    return execFileSync('git', ['show', `${base}:${path}`], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-  } catch {
-    return undefined
-  }
-}
-
 const lf = (s: string) => s.replace(/\r\n/g, '\n')
 
 // Point at the file; paste it when the worktree (cut from Base) would not have this version.
-export function ticketPrompt(repo: string, path: string, base: string, extra: string) {
-  const text = readFileSync(join(repo, path), 'utf8')
+export function ticketPrompt(checkout: string, path: string, base: string, extra: string) {
+  const text = readFileSync(join(checkout, path), 'utf8')
+  const atBase = tryGit(checkout, 'show', `${base}:${path}`) // the Base tip's copy, if it has one
   const head =
-    lf(text) === lf(atBase(repo, base, path) ?? '')
+    lf(text) === lf(atBase ?? '')
       ? `Work on the Ticket at \`${path}\`. Read it and the \`spec.md\` beside it, and follow AGENTS.md.`
       : `Work on this Ticket (\`${path}\` in the main checkout; your worktree does not have this version). Read the \`spec.md\` beside it, and follow AGENTS.md.\n\n${lf(text).trim()}`
   return extra.trim() ? `${head}\n\n${extra.trim()}` : head
@@ -57,8 +49,8 @@ export function appendComment(file: string, line: string) {
 const dirs = (dir: string) => (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort() : [])
 
 // Reads the working files, uncommitted ones included. Sorted by feature, then file, so callers group by runs.
-export function listTickets(repo: string): Ticket[] {
-  const scratch = join(repo, '.scratch')
+export function listTickets(checkout: string): Ticket[] {
+  const scratch = join(checkout, '.scratch')
   return dirs(scratch).flatMap((feature) => {
     const issues = join(scratch, feature, 'issues')
     if (!existsSync(issues)) return []
