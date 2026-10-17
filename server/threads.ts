@@ -143,7 +143,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
   // Ending keeps the branch; the worktree goes only when nothing would be lost.
   function end(t: Thread, state: State) {
     closeRun(t)
-    update(t, { state, ended: true })
+    update(t, { state, ended: true, endedAt: Date.now() })
     if (existsSync(t.worktree)) {
       const dirty = tryGit(t.worktree, 'status', '--porcelain')
       if (dirty !== '') log(t, 'system', 'Worktree kept: it has uncommitted changes.')

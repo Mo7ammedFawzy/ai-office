@@ -3,7 +3,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
-import { load, save } from './office.ts'
+import { latestActivity } from './activity.ts'
+import { load, readEntries, save } from './office.ts'
 import { discover } from './rooms.ts'
 import { createThreads, HttpError } from './threads.ts'
 
@@ -19,7 +20,7 @@ const broadcast = (msg: object) => {
   for (const c of wss.clients) c.send(s)
 }
 wss.on('connection', (ws) =>
-  ws.send(JSON.stringify({ ...roomsMsg(), type: 'snapshot', threads: office.threads, maxRunning: office.maxRunning })),
+  ws.send(JSON.stringify({ ...roomsMsg(), type: 'snapshot', threads: office.threads, maxRunning: office.maxRunning, activity: latestActivity(office.threads, readEntries) })),
 )
 
 const threads = createThreads(office, () => rooms, broadcast)
