@@ -22,6 +22,7 @@ export type Thread = {
   inbox: string[] // messages waiting for the next launch
   createdAt: number
   queuedAt: number
+  endedAt?: number
   costUsd?: number
   tokens?: number
   asks: Ask[] // Needs-you requests, oldest first; only live while the run is
