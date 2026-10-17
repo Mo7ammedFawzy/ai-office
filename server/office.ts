@@ -22,6 +22,7 @@ export type Thread = {
   inbox: string[] // messages waiting for the next launch
   createdAt: number
   queuedAt: number
+  endedAt?: number
   costUsd?: number
   tokens?: number
   ticket?: string // `.scratch/<feature>/issues/*.md` path in the Room's main checkout

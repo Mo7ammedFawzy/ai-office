@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { endedNewestFirst } from '../../server/activity.ts'
 import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Thread } from './office.ts'
 import type { Ticket } from '../../server/tickets.ts'
+import { ChangesPanel, ChangesSummary, useChanges } from './Changes.tsx'
 
 const roomPath = (name: string, action: string) => `rooms/${encodeURIComponent(name)}/${action}`
 
@@ -28,6 +30,8 @@ export function App() {
   const needy = threads.filter((t) => t.asks.length > 0).sort((a, b) => a.asks[0].at - b.asks[0].at)
   const waiting = needy.flatMap((t) => t.asks.map((a) => ({ t, a })))
   const seen = useRef<Set<string>>(undefined)
+  const byId = new Map(threads.map((t) => [t.id, t]))
+  const ended = endedNewestFirst(threads)
 
   useEffect(() => {
     document.title = waiting.length ? `(${waiting.length}) AI Office` : 'AI Office'
@@ -65,7 +69,32 @@ export function App() {
         </section>
         <section>
           <h2 className="mb-1 text-xs uppercase tracking-wide text-slate-500">Activity</h2>
+          {office.activity.length === 0 && <p className="text-slate-600">Nothing yet.</p>}
+          <div className="flex flex-col">
+            {office.activity.map(({ id, entry }, i) => (
+              <button key={i} onClick={() => setSelected(id)} className="rounded px-1 py-0.5 text-left hover:bg-slate-800">
+                <span className="block truncate text-xs text-slate-500">
+                  {byId.get(id)?.room} · {byId.get(id)?.title} · {new Date(entry.at).toLocaleTimeString()}
+                </span>
+                <span className={`block truncate ${entry.kind === 'error' ? 'text-red-400' : 'text-slate-300'}`}>{entry.text}</span>
+              </button>
+            ))}
+          </div>
         </section>
+        <details>
+          <summary className="cursor-pointer text-xs uppercase tracking-wide text-slate-500">Ended ({ended.length})</summary>
+          <div className="mt-1 flex flex-col">
+            {ended.map((t) => (
+              <button key={t.id} onClick={() => setSelected(t.id)} className={`flex items-center gap-2 rounded px-1 py-1 text-left hover:bg-slate-800 ${t.id === selected ? 'bg-slate-800' : ''}`}>
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="text-slate-500">{t.room} · </span>
+                  {t.title}
+                </span>
+                <StateChip state={t.state} />
+              </button>
+            ))}
+          </div>
+        </details>
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -224,6 +253,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
     end.current?.scrollIntoView() // returns a Promise in newer Chrome; never hand it to React
   }, [entries?.length])
 
+  const changes = useChanges(t.id, `${t.state}:${entries?.length}`)
   const act = (action: string) => post(`threads/${t.id}/${action}`)
   const running = RUNNING.includes(t.state)
   const actions: [string, string][] = t.ended
@@ -249,6 +279,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         </div>
         <div className="truncate text-xs text-slate-500">
           {t.room} · {t.branch} ← {t.base} · {t.model}
+          <ChangesSummary changes={changes} />
           {t.costUsd !== undefined && ` · ${(t.tokens ?? 0).toLocaleString()} tokens · ~$${t.costUsd.toFixed(2)}`}
         </div>
         <div className="flex gap-1">
@@ -274,6 +305,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         ))}
         <div ref={end} />
       </div>
+      <ChangesPanel changes={changes} />
       {canSend && (
         <div className="flex gap-2 border-t border-slate-800 p-3">
           <textarea

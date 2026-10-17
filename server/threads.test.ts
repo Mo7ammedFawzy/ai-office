@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { State, Thread } from './office.ts'
-import { recover, slugify, toLaunch } from './threads.ts'
+import { recover, slugify, toLaunch, usageTracker } from './threads.ts'
 
 const th = (id: string, state: State, queuedAt = 0) => ({ id, state, queuedAt }) as Thread
 
@@ -16,6 +16,24 @@ test('recover turns running Threads idle and leaves the rest', () => {
   const threads = [th('a', 'starting'), th('b', 'working'), th('c', 'needs-you'), th('d', 'queued'), th('e', 'done')]
   assert.deepEqual(recover(threads).map((t) => t.id), ['a', 'b', 'c'])
   assert.deepEqual(threads.map((t) => t.state), ['idle', 'idle', 'idle', 'queued', 'done'])
+})
+
+test('usage adds up across runs whether or not a resumed session carries its earlier totals', () => {
+  const u = (costUsd: number, tokens: number) => ({ costUsd, tokens })
+  const fresh = usageTracker(u(0, 0))
+  assert.deepEqual(fresh(u(0.1, 100)), u(0.1, 100))
+  assert.deepEqual(fresh(u(0.3, 300)), u(0.3, 300)) // each result is the run's running total, not a delta
+
+  const carried = usageTracker(u(0.3, 300)) // resume: the first result already includes the 0.3
+  assert.deepEqual(carried(u(0.5, 500)), u(0.5, 500))
+
+  const reset = usageTracker(u(0.3, 300)) // resume that starts counting from zero again
+  assert.deepEqual(reset(u(0.1, 100)), u(0.4, 400))
+  assert.deepEqual(reset(u(0.5, 500)), u(0.8, 800)) // decided once per run: growing past the start is not a carry
+
+  const crashed = usageTracker(u(0.3, 300))
+  assert.equal(crashed(u(0, 0)), undefined) // crash results carry zeroed usage
+  assert.deepEqual(crashed(u(0.4, 400)), u(0.4, 400))
 })
 
 test('slugify makes short branch-safe slugs', () => {

@@ -3,7 +3,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
-import { load, save } from './office.ts'
+import { latestActivity } from './activity.ts'
+import { load, readEntries, save } from './office.ts'
 import { discover } from './rooms.ts'
 import { createThreads, HttpError } from './threads.ts'
 import { listTickets } from './tickets.ts'
@@ -20,7 +21,7 @@ const broadcast = (msg: object) => {
   for (const c of wss.clients) c.send(s)
 }
 wss.on('connection', (ws) =>
-  ws.send(JSON.stringify({ ...roomsMsg(), type: 'snapshot', threads: office.threads, maxRunning: office.maxRunning })),
+  ws.send(JSON.stringify({ ...roomsMsg(), type: 'snapshot', threads: office.threads, maxRunning: office.maxRunning, activity: latestActivity(office.threads, readEntries) })),
 )
 
 const threads = createThreads(office, () => rooms, broadcast)
@@ -49,6 +50,7 @@ const routes: Route[] = [
   ['POST', /^\/api\/threads\/([^/]+)\/answer$/, (m, body) => threads.answer(m[1], body)],
   ['POST', /^\/api\/threads\/([^/]+)\/(interrupt|stop|done|retry|end|discard)$/, (m) => threads.act(m[1], m[2])],
   ['GET', /^\/api\/threads\/([^/]+)\/entries$/, (m) => threads.entries(m[1])],
+  ['GET', /^\/api\/threads\/([^/]+)\/diff$/, (m) => threads.changes(m[1])],
 ]
 
 async function api(req: IncomingMessage, res: ServerResponse) {
