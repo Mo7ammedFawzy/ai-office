@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { listTickets, parseTicket, ticketPrompt } from './tickets.ts'
+import { appendComment, listTickets, parseTicket, ticketPrompt } from './tickets.ts'
 
 const write = (root: string, path: string, text: string) => {
   mkdirSync(join(root, path, '..'), { recursive: true })
@@ -69,4 +69,18 @@ test('ticketPrompt points at the file unless the main checkout differs from the 
 
   write(repo, '.scratch/f/issues/02-new.md', '# 02: New\n') // not on the Base branch at all
   assert.ok(ticketPrompt(repo, '.scratch/f/issues/02-new.md', 'main', '').includes('# 02: New'))
+})
+
+test('appendComment adds lines under ## Comments and never touches Status', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tickets-comment-'))
+  const file = join(dir, '01.md')
+
+  writeFileSync(file, '# 01: X\n\n**Status:** ready-for-agent\n\n- [ ] box\n')
+  appendComment(file, 'one')
+  appendComment(file, 'two')
+  assert.equal(readFileSync(file, 'utf8'), '# 01: X\n\n**Status:** ready-for-agent\n\n- [ ] box\n\n## Comments\n\n- one\n- two\n')
+
+  writeFileSync(file, '# 01: X\r\n\r\nStatus: done\r\n\r\n## Comments\r\n\r\n- old\r\n\r\n## Notes\r\n\r\nkeep\r\n') // a later section, CRLF
+  appendComment(file, 'new')
+  assert.equal(readFileSync(file, 'utf8'), '# 01: X\r\n\r\nStatus: done\r\n\r\n## Comments\r\n\r\n- old\r\n- new\r\n\r\n## Notes\r\n\r\nkeep\r\n')
 })

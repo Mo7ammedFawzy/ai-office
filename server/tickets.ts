@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 export type Ticket = { path: string; feature: string; title: string; status?: string; blockedBy?: string }
@@ -37,7 +37,24 @@ export function ticketPrompt(repo: string, path: string, base: string, extra: st
   return extra.trim() ? `${head}\n\n${extra.trim()}` : head
 }
 
-const dirs =(dir: string) => (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort() : [])
+// Adds `- <line>` at the end of the `## Comments` section (created if missing). Nothing else in the file changes.
+export function appendComment(file: string, line: string) {
+  const text = readFileSync(file, 'utf8')
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  const lines = lf(text).replace(/\n+$/, '').split('\n')
+  let at = lines.findIndex((l) => /^##\s+Comments\s*$/i.test(l))
+  if (at < 0) {
+    lines.push('', '## Comments', '')
+    at = lines.length - 2
+  }
+  let end = lines.findIndex((l, i) => i > at && /^#{1,2}\s/.test(l))
+  if (end < 0) end = lines.length
+  while (end - 1 > at && !lines[end - 1].trim()) end-- // after the section's last non-blank line
+  lines.splice(end, 0, ...(end === at + 1 ? [''] : []), `- ${line}`)
+  writeFileSync(file, lines.join(eol) + eol)
+}
+
+const dirs = (dir: string) => (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort() : [])
 
 // Reads the working files, uncommitted ones included. Sorted by feature, then file, so callers group by runs.
 export function listTickets(repo: string): Ticket[] {
