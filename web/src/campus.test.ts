@@ -34,13 +34,13 @@ test('a nested Subagent stands smaller, behind the one that spawned it', () => {
   assert.equal(hidden.more, 1) // no room left: it counts in +N
 })
 
-test('a finished Subagent lingers with its result, then shrinks away; a stopped one shrinks at once', () => {
+test('a finished or stopped Subagent lingers with its result, then shrinks away', () => {
   const done = sub('a', { status: 'completed', endedAt: 1000 })
-  const stopped = sub('s', { status: 'stopped', endedAt: 1000 })
+  const stopped = sub('s', { status: 'stopped', endedAt: 1000 }) // the run closed under it
   const at = (now: number) => huddle([done, stopped], now).shown.map((s) => `${s.sub.id}:${s.shrink}`)
-  assert.deepEqual(at(1000), ['a:false', 's:true'])
-  assert.deepEqual(at(4900), ['a:false'])
-  assert.deepEqual(at(5100), ['a:true'])
+  assert.deepEqual(at(1000), ['a:false', 's:false'])
+  assert.deepEqual(at(4900), ['a:false', 's:false'])
+  assert.deepEqual(at(5100), ['a:true', 's:true'])
   assert.deepEqual(at(6000), [])
   assert.equal(huddle([done], 6000).more, 0) // gone ones don't count
 })

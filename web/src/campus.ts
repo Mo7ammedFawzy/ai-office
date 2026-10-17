@@ -68,24 +68,23 @@ export const activityTag = (tool?: string) => (tool ? TAGS.find(([re]) => re.tes
 // The Subagent that raised an ask (the SDK's agentID is its task_id), or undefined for the Thread's own.
 export const askerOf = (t: Thread, ask: Ask) => (ask.agentID ? t.subagents?.find((s) => s.id === ask.agentID) : undefined)
 
-export const FINISH_MS = 4000 // a finished Subagent shows ✓/✕ this long
+export const FINISH_MS = 4000 // a finished or stopped Subagent shows ✓/✕ this long
 export const SHRINK_MS = 400
 const MAX_SHOWN = 3
 
 export type HuddleSpot = { sub: Subagent; dx: number; dz: number; size: number; shrink: boolean }
 
 // Subagents beside the parent's desk: offsets from the parent's spot, up to 3, then "+N". Nested ones stand
-// behind their spawner. A finished one lingers FINISH_MS (a stopped one doesn't), then shrinks for SHRINK_MS.
+// behind their spawner. An ended one lingers FINISH_MS, then shrinks for SHRINK_MS.
 export function huddle(subs: Subagent[], now: number): { shown: HuddleSpot[]; more: number } {
-  const linger = (s: Subagent) => (s.status === 'stopped' ? 0 : FINISH_MS)
-  const floor = subs.filter((s) => s.endedAt === undefined || now - s.endedAt < linger(s) + SHRINK_MS)
+  const floor = subs.filter((s) => s.endedAt === undefined || now - s.endedAt < FINISH_MS + SHRINK_MS)
   const ids = new Set(floor.map((s) => s.id))
   const shown: HuddleSpot[] = []
   let row = 0
   for (const s of floor) {
     if (shown.length === MAX_SHOWN) break
     const size = s.depth > 1 ? 0.32 : 0.42
-    const shrink = s.endedAt !== undefined && now - s.endedAt >= linger(s)
+    const shrink = s.endedAt !== undefined && now - s.endedAt >= FINISH_MS
     if (s.parent && ids.has(s.parent)) {
       const p = shown.find((h) => h.sub.id === s.parent)
       if (!p) continue // its spawner has no room: it counts in +N
