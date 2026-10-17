@@ -24,6 +24,7 @@ export type Thread = {
   queuedAt: number
   costUsd?: number
   tokens?: number
+  ticket?: string // `.scratch/<feature>/issues/*.md` path in the Room's main checkout
   asks: Ask[] // Needs-you requests, oldest first; only live while the run is
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Thread } from './office.ts'
+import type { Ticket } from '../../server/tickets.ts'
 
 const roomPath = (name: string, action: string) => `rooms/${encodeURIComponent(name)}/${action}`
 
@@ -46,7 +47,7 @@ export function App() {
     <div className="flex h-screen text-sm">
       <aside className="flex w-72 shrink-0 flex-col gap-4 overflow-auto border-r border-slate-800 p-3">
         <h1 className="font-semibold">AI Office</h1>
-        <NewThread rooms={visible} canStart={threads.filter((t) => RUNNING.includes(t.state)).length < office.maxRunning} onStarted={setSelected} />
+        <NewThread rooms={visible} threads={threads} canStart={threads.filter((t) => RUNNING.includes(t.state)).length < office.maxRunning} onStarted={setSelected} />
         <section>
           <h2 className="mb-1 text-xs uppercase tracking-wide text-slate-500">Needs you</h2>
           {needy.length === 0 && <p className="text-slate-600">Nothing waiting.</p>}
@@ -122,25 +123,69 @@ export function App() {
   )
 }
 
-function NewThread({ rooms, canStart, onStarted }: { rooms: Room[]; canStart: boolean; onStarted: (id: string) => void }) {
+function NewThread({ rooms, threads, canStart, onStarted }: { rooms: Room[]; threads: Thread[]; canStart: boolean; onStarted: (id: string) => void }) {
   const [prompt, setPrompt] = useState('')
   const [room, setRoom] = useState('')
   const [base, setBase] = useState('')
   const [model, setModel] = useState('sonnet')
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [ticket, setTicket] = useState('')
+  const [showAll, setShowAll] = useState(false)
   const target = room || rooms[0]?.name
+  const picked = tickets.find((x) => x.path === ticket)
+  const live = picked && threads.find((t) => t.room === target && t.ticket === picked.path && !t.ended)
+  const offered = tickets.filter((x) => showAll || x.status === 'ready-for-agent' || x.path === ticket)
+  const features = [...new Set(offered.map((x) => x.feature))]
+
+  async function loadTickets() {
+    if (!target) return
+    const res = await fetch(`/api/${roomPath(target, 'tickets')}`)
+    setTickets(res.ok ? await res.json() : [])
+  }
+  useEffect(() => {
+    setTicket('')
+    loadTickets()
+  }, [target])
 
   async function start() {
     if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission() // needs a click
-    const res = await post('threads', { room: target, prompt, base, model })
+    const res = await post('threads', { room: target, prompt, base, model, ticket: ticket || undefined })
     if (res.ok) {
       setPrompt('')
+      setTicket('')
+      loadTickets()
       onStarted((await res.json()).id)
     }
   }
 
   return (
     <section className="flex flex-col gap-2 rounded border border-slate-800 p-2">
-      <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder="What should Claude do?" className="resize-y rounded bg-slate-900 p-2 outline-none focus:ring-1 focus:ring-sky-600" />
+      {tickets.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <select value={ticket} onChange={(e) => setTicket(e.target.value)} className="min-w-0 flex-1 rounded bg-slate-900 p-1" aria-label="From Ticket">
+              <option value="">From Ticket…</option>
+              {features.map((f) => (
+                <optgroup key={f} label={f}>
+                  {offered.filter((x) => x.feature === f).map((x) => (
+                    <option key={x.path} value={x.path}>
+                      {x.title}
+                      {x.status !== 'ready-for-agent' ? ` (${x.status ?? 'no status'})` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <label className="flex items-center gap-1 text-xs text-slate-400">
+              <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+              show all
+            </label>
+          </div>
+          {picked?.blockedBy && <div className="text-xs text-slate-400">Blocked by: {picked.blockedBy}</div>}
+          {live && <div className="text-xs text-amber-400">Already on a desk: {live.title}</div>}
+        </div>
+      )}
+      <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder={ticket ? 'Anything to add? (optional)' : 'What should Claude do?'} className="resize-y rounded bg-slate-900 p-2 outline-none focus:ring-1 focus:ring-sky-600" />
       <div className="grid grid-cols-2 gap-2">
         <select value={target} onChange={(e) => setRoom(e.target.value)} className="rounded bg-slate-900 p-1" aria-label="Project">
           {rooms.map((r) => (
@@ -154,7 +199,7 @@ function NewThread({ rooms, canStart, onStarted }: { rooms: Room[]; canStart: bo
         </select>
       </div>
       <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="Base branch (default branch)" className="rounded bg-slate-900 p-1" />
-      <button disabled={!prompt.trim() || !target} onClick={start} className="rounded bg-sky-700 py-1 font-medium hover:bg-sky-600 disabled:opacity-40">
+      <button disabled={!(prompt.trim() || ticket) || !target} onClick={start} className="rounded bg-sky-700 py-1 font-medium hover:bg-sky-600 disabled:opacity-40">
         Start · {canStart ? 'starts now' : 'will queue'}
       </button>
     </section>
