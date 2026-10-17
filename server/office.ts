@@ -29,6 +29,20 @@ export type Thread = {
   asks: Ask[] // Needs-you requests, oldest first; only live while the run is
   desk?: number // seat in its Room from first start until it ends
   tool?: string // latest tool call, "<name> <detail>", for the scene's activity tag
+  subagents: Subagent[] // this run's Subagents, oldest first; cleared on the next launch
+}
+
+export type Subagent = {
+  id: string // SDK task_id; a Subagent's asks carry it as agentID
+  type: string // subagent_type
+  description: string
+  depth: number // spawn_depth: 1 = spawned by the Thread itself
+  parent?: string // the Subagent that spawned this one
+  status: 'running' | 'completed' | 'failed' | 'stopped'
+  summary?: string
+  tools: number
+  startedAt: number
+  endedAt?: number
 }
 
 export type Question = { question: string; header: string; multiSelect: boolean; options: { label: string; description: string }[] }
@@ -43,7 +57,10 @@ const defaults: Office = { maxRunning: 6, projectsRoot: 'C:\\Projects\\personal'
 export function load(): Office {
   try {
     const office: Office = { ...defaults, ...JSON.parse(readFileSync(file, 'utf8')) }
-    for (const t of office.threads) t.asks ??= [] // records from before Needs-you
+    for (const t of office.threads) {
+      t.asks ??= [] // records from before Needs-you
+      t.subagents ??= [] // and from before Subagents
+    }
     return office
   } catch (e: any) {
     if (e.code === 'ENOENT') return structuredClone(defaults)

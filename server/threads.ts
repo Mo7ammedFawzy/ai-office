@@ -2,9 +2,9 @@ import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { run, type Run, type RunnerEvent } from './agent-runner.ts'
+import { run, type Run, type RunnerEvent, type SubEvent } from './agent-runner.ts'
 import { diff, prUrl } from './changes.ts'
-import { appendEntry, readEntries, removeEntries, save, type Entry, type Office, type State, type Thread } from './office.ts'
+import { appendEntry, readEntries, removeEntries, save, type Entry, type Office, type State, type Subagent, type Thread } from './office.ts'
 import { appendComment, listTickets, ticketPrompt } from './tickets.ts'
 
 export const RUNNING: State[] = ['starting', 'working', 'needs-you']
@@ -36,9 +36,24 @@ export function freeDesk(threads: Thread[], room: string) {
 // After a restart no process is left, so whatever was running waits for the user.
 export function recover(threads: Thread[]): Thread[] {
   const hit = threads.filter((t) => RUNNING.includes(t.state))
-  for (const t of hit) Object.assign(t, { state: 'idle', asks: [] })
+  for (const t of hit) Object.assign(t, { state: 'idle', asks: [], subagents: stopSubs(t.subagents ?? [], Date.now()) })
   return hit
 }
+
+export function applySub(subs: Subagent[], e: SubEvent, now: number): Subagent[] {
+  if (e.kind === 'sub-start')
+    return [...subs, { id: e.id, type: e.type, description: e.description, depth: e.depth, parent: e.parent, status: 'running', tools: 0, startedAt: now }]
+  if (!subs.some((s) => s.id === e.id)) return subs
+  return subs.map((s) =>
+    s.id !== e.id ? s
+    : e.kind === 'sub-progress' ? { ...s, summary: e.summary ?? s.summary, tools: e.tools }
+    : { ...s, status: e.status, summary: e.summary || s.summary, tools: e.tools ?? s.tools, endedAt: now },
+  )
+}
+
+// The run is gone: whatever was still running stops with it.
+export const stopSubs = (subs: Subagent[], now: number) =>
+  subs.map((s) => (s.status === 'running' ? { ...s, status: 'stopped' as const, endedAt: now } : s))
 
 type Usage = { costUsd: number; tokens: number }
 
@@ -101,6 +116,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     runs.get(t.id)?.close()
     runs.delete(t.id)
     t.asks = []
+    t.subagents = stopSubs(t.subagents, Date.now())
   }
 
   function settle(t: Thread, askId: string) {
@@ -113,7 +129,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
   }
 
   function launch(t: Thread) {
-    update(t, { state: 'starting', desk: t.desk ?? freeDesk(office.threads, t.room) })
+    update(t, { state: 'starting', desk: t.desk ?? freeDesk(office.threads, t.room), subagents: [] })
     try {
       if (!existsSync(t.worktree)) {
         const hasBranch = tryGit(roomPath(t), 'rev-parse', '--verify', '--quiet', `refs/heads/${t.branch}`)
@@ -148,7 +164,15 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       log(t, 'tool', t.tool)
       emit({ type: 'thread', thread: t }) // not saved: it only feeds the scene's activity tag
     }
-    else if (e.kind === 'ask') {
+    else if (e.kind === 'sub-progress') {
+      t.subagents = applySub(t.subagents, e, Date.now())
+      emit({ type: 'thread', thread: t }) // not saved: progress is frequent and only feeds bubbles
+    } else if (e.kind === 'sub-start' || e.kind === 'sub-end') {
+      const subagents = applySub(t.subagents, e, Date.now())
+      const s = subagents.find((s) => s.id === e.id)
+      if (s) log(t, 'system', e.kind === 'sub-start' ? `${s.type} Subagent started: ${s.description}` : `${s.type} Subagent ${s.status}: ${s.summary ?? ''}`.trim())
+      update(t, { subagents })
+    } else if (e.kind === 'ask') {
       log(t, 'system', `Needs you: ${e.ask.title}`)
       update(t, { asks: [...t.asks, e.ask], state: 'needs-you' })
     } else if (e.kind === 'unask') settle(t, e.id)
@@ -232,7 +256,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
         id, room: body.room, title, model, base,
         branch: `office/${slug}`,
         worktree: join(office.projectsRoot, '.worktrees', body.room, slug),
-        state: 'queued', ended: false, hasSession: false, inbox: [], asks: [],
+        state: 'queued', ended: false, hasSession: false, inbox: [], asks: [], subagents: [],
         createdAt: now, queuedAt: now, ticket: ticket?.path,
       }
       office.threads.push(t)

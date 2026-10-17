@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { State, Thread } from './office.ts'
-import { freeDesk, recover, slugify, toLaunch, usageTracker } from './threads.ts'
+import { applySub, freeDesk, recover, slugify, stopSubs, toLaunch, usageTracker } from './threads.ts'
 
 const th = (id: string, state: State, queuedAt = 0) => ({ id, state, queuedAt }) as Thread
 
@@ -16,6 +16,19 @@ test('recover turns running Threads idle and leaves the rest', () => {
   const threads = [th('a', 'starting'), th('b', 'working'), th('c', 'needs-you'), th('d', 'queued'), th('e', 'done')]
   assert.deepEqual(recover(threads).map((t) => t.id), ['a', 'b', 'c'])
   assert.deepEqual(threads.map((t) => t.state), ['idle', 'idle', 'idle', 'queued', 'done'])
+})
+
+test('a Thread tracks its Subagents from start through progress to finish', () => {
+  let subs = applySub([], { kind: 'sub-start', id: 'a', type: 'Explore', description: 'look', depth: 1 }, 100)
+  subs = applySub(subs, { kind: 'sub-start', id: 'b', type: 'agent', description: 'deeper', depth: 2, parent: 'a' }, 150)
+  subs = applySub(subs, { kind: 'sub-progress', id: 'a', summary: 'Reading routes', tools: 3 }, 200)
+  subs = applySub(subs, { kind: 'sub-progress', id: 'a', tools: 4 }, 250) // no summary: keep the last one
+  assert.deepEqual(subs[0], { id: 'a', type: 'Explore', description: 'look', depth: 1, parent: undefined, status: 'running', summary: 'Reading routes', tools: 4, startedAt: 100 })
+  subs = applySub(subs, { kind: 'sub-end', id: 'a', status: 'completed', summary: 'Found it', tools: 6 }, 300)
+  assert.deepEqual([subs[0].status, subs[0].summary, subs[0].tools, subs[0].endedAt], ['completed', 'Found it', 6, 300])
+  assert.equal(applySub(subs, { kind: 'sub-progress', id: 'zzz', tools: 1 }, 400), subs) // unknown id: unchanged
+  const stopped = stopSubs(subs, 500)
+  assert.deepEqual(stopped.map((s) => [s.status, s.endedAt]), [['completed', 300], ['stopped', 500]]) // only running ones stop
 })
 
 test('usage adds up across runs whether or not a resumed session carries its earlier totals', () => {
