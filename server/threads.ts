@@ -1,9 +1,11 @@
-import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { run, type Run, type RunnerEvent } from './agent-runner.ts'
-import { appendEntry, readEntries, removeEntries, save, type Entry, type Office, type State, type Thread } from './office.ts'
+import { run, type Run, type RunnerEvent, type SubEvent } from './agent-runner.ts'
+import { diff, prUrl } from './changes.ts'
+import { git, tryGit } from './git.ts'
+import { appendEntry, readEntries, removeEntries, save, type Entry, type Office, type State, type Subagent, type Thread } from './office.ts'
+import { appendComment, listTickets, ticketPrompt } from './tickets.ts'
 
 export const RUNNING: State[] = ['starting', 'working', 'needs-you']
 export const MODELS = ['sonnet', 'opus', 'haiku']
@@ -23,28 +25,65 @@ export function toLaunch(threads: Thread[], maxRunning: number): Thread[] {
   return threads.filter((t) => t.state === 'queued').sort((a, b) => a.queuedAt - b.queuedAt).slice(0, Math.max(0, free))
 }
 
+// The lowest desk in the Room that no live Thread holds.
+export function freeDesk(threads: Thread[], room: string) {
+  const used = new Set(threads.filter((t) => t.room === room && !t.ended).map((t) => t.desk))
+  let i = 0
+  while (used.has(i)) i++
+  return i
+}
+
 // After a restart no process is left, so whatever was running waits for the user.
 export function recover(threads: Thread[]): Thread[] {
   const hit = threads.filter((t) => RUNNING.includes(t.state))
-  for (const t of hit) Object.assign(t, { state: 'idle', asks: [] })
+  for (const t of hit) Object.assign(t, { state: 'idle', asks: [], subagents: stopSubs(t.subagents ?? [], Date.now()) })
   return hit
 }
 
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-const tryGit = (cwd: string, ...args: string[]) => {
-  try {
-    return git(cwd, ...args)
-  } catch {
-    return undefined
+export function applySub(subs: Subagent[], e: SubEvent, now: number): Subagent[] {
+  if (e.kind === 'sub-start')
+    return [...subs, { id: e.id, type: e.type, description: e.description, depth: e.depth, parent: e.parent, status: 'running', tools: 0, startedAt: now }]
+  if (!subs.some((s) => s.id === e.id)) return subs
+  return subs.map((s) =>
+    s.id !== e.id ? s
+    : e.kind === 'sub-progress' ? { ...s, summary: e.summary ?? s.summary, tools: e.tools }
+    : { ...s, status: e.status, summary: e.summary || s.summary, tools: e.tools ?? s.tools, endedAt: now },
+  )
+}
+
+// The run is gone: whatever was still running stops with it.
+export const stopSubs = (subs: Subagent[], now: number) =>
+  subs.map((s) => (s.status === 'running' ? { ...s, status: 'stopped' as const, endedAt: now } : s))
+
+type Usage = { costUsd: number; tokens: number }
+
+// One per run: turns the SDK's per-query() running totals into the Thread's totals. A resumed session's first
+// result either already includes `start` (its transcript saved them) or counts from zero again; we tell by size.
+// (SDK result docs: cumulative per query(); a resume continues the transcript's saved total "when it has one".)
+// ponytail: a reset run whose first turn alone costs more than everything before it is read as a carry (undercounts).
+export function usageTracker(start: Usage) {
+  let offset: Usage | undefined
+  return (latest: Usage): Usage | undefined => {
+    if (!latest.tokens) return // crash/startup-error results carry zeroed usage
+    offset ??= latest.costUsd >= start.costUsd ? { costUsd: 0, tokens: 0 } : start
+    return { costUsd: offset.costUsd + latest.costUsd, tokens: offset.tokens + latest.tokens }
   }
 }
-const errorText = (e: any) => String(e?.stderr || e?.message || e).trim()
 
-function defaultBase(repo: string) {
+// What an ended Thread writes to its Ticket (after `Thread "<title>" `).
+export function endNote(state: State, branchKept: boolean, pr?: string) {
+  const s = state[0].toUpperCase() + state.slice(1)
+  if (!branchKept) return `${s} before starting`
+  const n = pr?.match(/\/pull\/(\d+)/)?.[1]
+  return `${s}: branch kept${n ? `, PR #${n}` : ''}`
+}
+
+const errorText =(e: any) => String(e?.stderr || e?.message || e).trim()
+
+function defaultBase(checkout: string) {
   return (
-    tryGit(repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD') ??
-    ['main', 'master'].find((b) => tryGit(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`)) ??
+    tryGit(checkout, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')?.trim() ??
+    ['main', 'master'].find((b) => tryGit(checkout, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`)) ??
     'HEAD'
   )
 }
@@ -77,6 +116,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     runs.get(t.id)?.close()
     runs.delete(t.id)
     t.asks = []
+    t.subagents = stopSubs(t.subagents, Date.now())
   }
 
   function settle(t: Thread, askId: string) {
@@ -89,7 +129,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
   }
 
   function launch(t: Thread) {
-    update(t, { state: 'starting' })
+    update(t, { state: 'starting', desk: t.desk ?? freeDesk(office.threads, t.room), subagents: [] })
     try {
       if (!existsSync(t.worktree)) {
         const hasBranch = tryGit(roomPath(t), 'rev-parse', '--verify', '--quiet', `refs/heads/${t.branch}`)
@@ -100,16 +140,17 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       log(t, 'error', `Could not create the worktree: ${errorText(e)}`)
       return fail(t)
     }
+    const track = usageTracker({ costUsd: t.costUsd ?? 0, tokens: t.tokens ?? 0 })
     const r = run(
       { id: t.id, resume: t.hasSession, cwd: t.worktree, projectRoot: roomPath(t), model: t.model, apiKey: office.apiKey },
-      (e) => onEvent(t, e),
+      (e) => onEvent(t, e, track),
     )
     runs.set(t.id, r)
     for (const m of t.inbox) r.send(m)
     update(t, { inbox: [] })
   }
 
-  function onEvent(t: Thread, e: RunnerEvent) {
+  function onEvent(t: Thread, e: RunnerEvent, track: ReturnType<typeof usageTracker>) {
     if (e.kind === 'session' && !t.hasSession) update(t, { hasSession: true })
     else if (e.kind === 'state' && e.state === 'working' && t.state === 'starting') update(t, { state: 'working' })
     else if (e.kind === 'state' && e.state === 'idle' && t.state === 'working') {
@@ -118,15 +159,28 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       update(t, { state: 'idle' })
       schedule()
     } else if (e.kind === 'text') log(t, 'text', e.text)
-    else if (e.kind === 'tool') log(t, 'tool', `${e.name} ${e.detail}`.trim())
-    else if (e.kind === 'ask') {
+    else if (e.kind === 'tool') {
+      t.tool = `${e.name} ${e.detail}`.trim()
+      log(t, 'tool', t.tool)
+      emit({ type: 'thread', thread: t }) // not saved: it only feeds the scene's activity tag
+    }
+    else if (e.kind === 'sub-progress') {
+      t.subagents = applySub(t.subagents, e, Date.now())
+      emit({ type: 'thread', thread: t }) // not saved: progress is frequent and only feeds bubbles
+    } else if (e.kind === 'sub-start' || e.kind === 'sub-end') {
+      const subagents = applySub(t.subagents, e, Date.now())
+      const s = subagents.find((s) => s.id === e.id)
+      if (s) log(t, 'system', e.kind === 'sub-start' ? `${s.type} Subagent started: ${s.description}` : `${s.type} Subagent ${s.status}: ${s.summary ?? ''}`.trim())
+      update(t, { subagents })
+    } else if (e.kind === 'ask') {
       log(t, 'system', `Needs you: ${e.ask.title}`)
       update(t, { asks: [...t.asks, e.ask], state: 'needs-you' })
     } else if (e.kind === 'unask') settle(t, e.id)
     else if (e.kind === 'result') {
       if (interrupted.delete(t.id)) log(t, 'system', 'Interrupted.') // its error is only a diagnostic
       else if (e.error) log(t, 'error', e.error)
-      update(t, { costUsd: e.costUsd, tokens: e.tokens })
+      const usage = track(e)
+      if (usage) update(t, usage)
     } else if (e.kind === 'exit') {
       runs.delete(t.id)
       log(t, 'error', e.error ?? 'Claude Code stopped unexpectedly.')
@@ -140,10 +194,24 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     schedule()
   }
 
+  // Write-back goes to the main checkout's copy only, so a Thread's branch never carries tracker edits.
+  function comment(t: Thread, text: string) {
+    if (!t.ticket) return
+    try {
+      appendComment(join(roomPath(t), t.ticket), `Thread "${t.title}" ${text}`)
+    } catch (e) {
+      log(t, 'system', `Could not write to the Ticket: ${errorText(e)}`)
+    }
+  }
+
   // Ending keeps the branch; the worktree goes only when nothing would be lost.
   function end(t: Thread, state: State) {
     closeRun(t)
-    update(t, { state, ended: true })
+    update(t, { state, ended: true, endedAt: Date.now(), desk: undefined })
+    if (t.ticket) {
+      const kept = !!tryGit(roomPath(t), 'rev-parse', '--verify', '--quiet', `refs/heads/${t.branch}`)
+      ;(kept ? prUrl(roomPath(t), t.branch) : Promise.resolve(undefined)).then((pr) => comment(t, endNote(state, kept, pr)))
+    }
     if (existsSync(t.worktree)) {
       const dirty = tryGit(t.worktree, 'status', '--porcelain')
       if (dirty !== '') log(t, 'system', 'Worktree kept: it has uncommitted changes.')
@@ -167,29 +235,35 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
 
   // Boot: nothing survived the restart.
   for (const t of recover(office.threads)) log(t, 'system', 'Office restarted during this turn. Reply to continue.')
+  for (const t of office.threads) if (!t.ended && t.state !== 'queued') t.desk ??= freeDesk(office.threads, t.room) // records from before desks
   save(office)
   schedule()
 
   return {
-    start(body: { room?: string; prompt?: string; base?: string; model?: string }) {
-      const prompt = body.prompt?.trim()
+    start(body: { room?: string; prompt?: string; base?: string; model?: string; ticket?: string }) {
       const model = body.model || 'sonnet'
       if (!body.room || !rooms().includes(body.room)) throw new HttpError(400, 'Unknown Project')
-      if (!prompt) throw new HttpError(400, 'Prompt is empty')
       if (!MODELS.includes(model)) throw new HttpError(400, 'Unknown model')
+      const checkout = join(office.projectsRoot, body.room)
+      const base = body.base?.trim() || defaultBase(checkout)
+      // Only listed Tickets: the path names a file we read and write.
+      const ticket = body.ticket ? listTickets(checkout).find((x) => x.path === body.ticket) : undefined
+      if (body.ticket && !ticket) throw new HttpError(400, 'No such Ticket')
+      const prompt = ticket ? ticketPrompt(checkout, ticket.path, base, body.prompt ?? '') : body.prompt?.trim()
+      if (!prompt) throw new HttpError(400, 'Prompt is empty')
       const id = randomUUID()
-      const title = prompt.split('\n')[0].slice(0, 60)
+      const title = (ticket?.title ?? prompt.split('\n')[0]).slice(0, 60)
       const slug = `${slugify(title)}-${id.slice(0, 4)}`
       const now = Date.now()
       const t: Thread = {
-        id, room: body.room, title, model,
-        base: body.base?.trim() || defaultBase(join(office.projectsRoot, body.room)),
+        id, room: body.room, title, model, base,
         branch: `office/${slug}`,
         worktree: join(office.projectsRoot, '.worktrees', body.room, slug),
-        state: 'queued', ended: false, hasSession: false, inbox: [], asks: [],
-        createdAt: now, queuedAt: now,
+        state: 'queued', ended: false, hasSession: false, inbox: [], asks: [], subagents: [],
+        createdAt: now, queuedAt: now, ticket: ticket?.path,
       }
       office.threads.push(t)
+      comment(t, `started on ${t.branch} from ${base} (${new Date().toLocaleDateString('en-CA')})`)
       log(t, 'user', prompt)
       queue(t, prompt)
       return { id }
@@ -250,5 +324,25 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     },
 
     entries: (id: string) => readEntries(get(id).id),
+
+    // The main checkout's copy: write-back lands there.
+    ticket(id: string) {
+      const t = get(id)
+      if (!t.ticket) throw new HttpError(404, 'This Thread has no Ticket')
+      const file = join(roomPath(t), t.ticket)
+      if (!existsSync(file)) throw new HttpError(404, 'The Ticket file is gone')
+      return readFileSync(file, 'utf8')
+    },
+
+    async changes(id: string) {
+      const t = get(id)
+      const pr = prUrl(roomPath(t), t.branch)
+      try {
+        const d = existsSync(t.worktree) ? diff(t.worktree, t.base) : diff(roomPath(t), t.base, t.branch)
+        return { ...d, pr: await pr }
+      } catch (e) {
+        throw new HttpError(409, `No changes to show: ${errorText(e)}`) // e.g. queued, nothing created yet
+      }
+    },
   }
 }

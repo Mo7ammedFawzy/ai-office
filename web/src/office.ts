@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Ask, Entry, State, Thread } from '../../server/office.ts'
+import { addActivity, type Activity } from '../../server/activity.ts'
+export { endedNewestFirst } from '../../server/activity.ts'
+import type { Ask, Entry, State, Subagent, Thread } from '../../server/office.ts'
 
-export type { Ask, Entry, State, Thread }
+export type { Activity, Ask, Entry, State, Subagent, Thread }
 export type Room = { name: string; hidden: boolean }
 type OfficeState = {
   connected: boolean
@@ -9,13 +11,14 @@ type OfficeState = {
   threads: Thread[]
   maxRunning: number
   entries: Record<string, Entry[]> // transcripts of Threads opened in the drawer
+  activity: Activity[] // latest entries across all Threads, newest first
 }
 
 export const RUNNING: State[] = ['starting', 'working', 'needs-you']
 
 // Live Office state from /ws; reconnects every second while the server is down.
 export function useOffice() {
-  const [state, setState] = useState<OfficeState>({ connected: false, rooms: [], threads: [], maxRunning: 6, entries: {} })
+  const [state, setState] = useState<OfficeState>({ connected: false, rooms: [], threads: [], maxRunning: 6, entries: {}, activity: [] })
 
   useEffect(() => {
     let ws: WebSocket
@@ -28,7 +31,7 @@ export function useOffice() {
         setState((s) => {
           switch (msg.type) {
             case 'snapshot':
-              return { connected: true, rooms: msg.rooms, threads: msg.threads, maxRunning: msg.maxRunning, entries: {} }
+              return { connected: true, rooms: msg.rooms, threads: msg.threads, maxRunning: msg.maxRunning, entries: {}, activity: msg.activity }
             case 'rooms':
               return { ...s, rooms: msg.rooms }
             case 'thread': {
@@ -36,9 +39,11 @@ export function useOffice() {
               return { ...s, threads: known ? s.threads.map((t) => (t.id === msg.thread.id ? msg.thread : t)) : [...s.threads, msg.thread] }
             }
             case 'removed':
-              return { ...s, threads: s.threads.filter((t) => t.id !== msg.id) }
-            case 'entry':
-              return s.entries[msg.id] ? { ...s, entries: { ...s.entries, [msg.id]: [...s.entries[msg.id], msg.entry] } } : s
+              return { ...s, threads: s.threads.filter((t) => t.id !== msg.id), activity: s.activity.filter((a) => a.id !== msg.id) }
+            case 'entry': {
+              const activity = addActivity(s.activity, { id: msg.id, entry: msg.entry })
+              return s.entries[msg.id] ? { ...s, activity, entries: { ...s.entries, [msg.id]: [...s.entries[msg.id], msg.entry] } } : { ...s, activity }
+            }
           }
           return s
         })

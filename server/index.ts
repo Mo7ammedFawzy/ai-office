@@ -3,9 +3,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
-import { load, save } from './office.ts'
+import { latestActivity } from './activity.ts'
+import { load, readEntries, save } from './office.ts'
 import { discover } from './rooms.ts'
 import { createThreads, HttpError } from './threads.ts'
+import { listTickets } from './tickets.ts'
 
 const PORT = 4310
 const office = load()
@@ -19,7 +21,7 @@ const broadcast = (msg: object) => {
   for (const c of wss.clients) c.send(s)
 }
 wss.on('connection', (ws) =>
-  ws.send(JSON.stringify({ ...roomsMsg(), type: 'snapshot', threads: office.threads, maxRunning: office.maxRunning })),
+  ws.send(JSON.stringify({ ...roomsMsg(), type: 'snapshot', threads: office.threads, maxRunning: office.maxRunning, activity: latestActivity(office.threads, readEntries) })),
 )
 
 const threads = createThreads(office, () => rooms, broadcast)
@@ -39,11 +41,17 @@ const routes: Route[] = [
     broadcast(roomsMsg())
   }],
   ['POST', /^\/api\/rooms\/([^/]+)\/(hide|show)$/, (m) => setHidden(m[1], m[2] === 'hide')],
-  ['POST', /^\/api\/threads$/, (_, body) => threads.start(body)],
+  ['GET', /^\/api\/rooms\/([^/]+)\/tickets$/, (m) => {
+    if (!rooms.includes(m[1])) throw new HttpError(404, 'No such Room')
+    return listTickets(join(office.projectsRoot, m[1]))
+  }],
+  ['POST', /^\/api\/threads$/,(_, body) => threads.start(body)],
   ['POST', /^\/api\/threads\/([^/]+)\/send$/, (m, body) => threads.send(m[1], body.text)],
   ['POST', /^\/api\/threads\/([^/]+)\/answer$/, (m, body) => threads.answer(m[1], body)],
   ['POST', /^\/api\/threads\/([^/]+)\/(interrupt|stop|done|retry|end|discard)$/, (m) => threads.act(m[1], m[2])],
   ['GET', /^\/api\/threads\/([^/]+)\/entries$/, (m) => threads.entries(m[1])],
+  ['GET', /^\/api\/threads\/([^/]+)\/diff$/, (m) => threads.changes(m[1])],
+  ['GET', /^\/api\/threads\/([^/]+)\/ticket$/, (m) => threads.ticket(m[1])],
 ]
 
 async function api(req: IncomingMessage, res: ServerResponse) {
@@ -59,6 +67,7 @@ async function api(req: IncomingMessage, res: ServerResponse) {
     }
     const out = await handle([...m].map(decodeURIComponent), body)
     if (out === undefined) return res.writeHead(204).end()
+    if (typeof out === 'string') return res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end(out)
     return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out))
   }
   res.writeHead(404).end()
