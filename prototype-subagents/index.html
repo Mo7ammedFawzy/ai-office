@@ -1,16 +1,17 @@
 <!doctype html>
 <!--
-  PROTOTYPE — throwaway. Answers "Office floor layout prototype" (ai-office #10):
-  how is the Office floor laid out as Projects and Thread counts vary — Room placement and size, where desks appear
-  as Threads start and Subagents arrive, Room labels, camera controls, and the flat Top view?
-  Three structurally different floors (?variant=A|B|C), hosted in the Inbox shell picked in #8:
-    A  Campus   — every Room on one floor, alphabetical grid; Rooms grow a row of 3 desks at a time; free orbit/pan/zoom
-    B  One Room — only the focused Room, re-fitted as it grows; tabs switch Rooms; zoom only
-    C  Corridor — Rooms side by side along a hallway, busiest first; Rooms grow sideways; drag/scroll pans along it
-  All share: Room labels on the back wall, 3D/Top toggle (T), Fit, walk-in/out, Subagents standing at the parent's desk,
-  and the Thread drawer pushing the scene left instead of covering it. Prototype-only stress panel (fuchsia) top-right.
+  PROTOTYPE — throwaway. Answers "Subagent presentation prototype" (ai-office #12):
+  how does a Subagent look and behave on the Campus floor — arrival, bubble, leaving, nesting, and a Subagent raising Needs-you?
+  Floor is fixed to Campus (picked in #10). Three structurally different Subagent presentations (?variant=A|B|C):
+    A  Huddle      — pops in beside the parent's desk; always-on bubble with the live agentProgressSummaries line;
+                     ends with a ✓/✕ + finish summary, then shrinks away on the spot
+    B  Walk-ins    — walks in through the door to the parent's desk; bubble on hover only; walks back out when done
+    C  Crew card   — no Subagent Characters; a card over the parent lists every Subagent (type · summary · tool uses)
+  All share: Subagent data shaped like the SDK's task_started/task_progress/task_notification, nesting (spawn_depth 2),
+  a Subagent asking permission (canUseTool with agentID), and a Subagents section in the Thread drawer.
+  Prototype-only stress panel (fuchsia) top-right has the Subagent buttons.
   No build: React + htm from esm.sh, Tailwind play CDN, plain three.js standing in for R3F.
-  Run: npx serve prototype-floor-layout   (Chrome with ignore-gpu-blocklist on)
+  Run: npx serve prototype-subagents   (Chrome with ignore-gpu-blocklist on)
 -->
 <html lang="en" class="dark">
 <head>
@@ -63,6 +64,21 @@ const bases = p => BASES[p] ?? ['main'];
 const MORE_PROJECTS = ['resume-site', 'scraper', 'game-jam', 'notes', 'infra', 'budget-app', 'chess-bot', 'photo-sorter', 'homelab', 'kata'];
 const FILL_TITLES = ['Tidy imports', 'Add a test for the parser', 'Rename helpers', 'Write docs for setup', 'Fix flaky test', 'Bump deps', 'Add loading state', 'Split the big module'];
 
+// Subagents, shaped like the SDK's task_* events (task_started → task_progress.summary → task_notification)
+const SUMMARIES = {
+  'Explore': ['Listing src/', 'Reading settings.ts', 'Grepping for "Room"', 'Reading rooms.ts', 'Found 3 call sites'],
+  'general-purpose': ['Running the test suite', 'Reading the failing test', 'Checking fixtures', 'Comparing snapshots'],
+  'Plan': ['Reading the issue', 'Sketching the approach', 'Weighing two options', 'Writing the plan'],
+};
+const FINISH = { 'Explore': 'Rooms are listed in src/rooms.ts; 3 callers.', 'general-purpose': '12 passed, 1 flaky.', 'Plan': 'Plan: 4 steps, touches 2 files.' };
+const subagent = (spec, o = {}) => {
+  const [type, desc] = spec.split(' — ');
+  return { id: id4(), type, desc: desc ?? '', status: 'running', summary: 'Starting…', tools: 0, depth: 1, parent: null, asking: false,
+    started: Date.now(), until: Date.now() + 14000 + Math.random() * 12000, gone: null, ...o };
+};
+const SUB_SPECS = ['Explore — mapping the code around it', 'general-purpose — checking the tests', 'Plan — sketching the approach'];
+const SUB_DOT = { running: 'bg-violet-400 animate-pulse', completed: 'bg-emerald-400', failed: 'bg-red-400', stopped: 'bg-zinc-500' };
+
 const genericScript = prompt => [
   { tool: 'Read', arg: 'AGENTS.md' },
   { sub: 'Explore — mapping the code around it' },
@@ -85,7 +101,7 @@ function thread(o) {
 }
 const initial = () => {
   const t = [
-    thread({ title: 'Add Room discovery', state: 'Working', desk: 0, subs: [Date.now() + 20000, Date.now() + 26000],
+    thread({ title: 'Add Room discovery', state: 'Working', desk: 0, subs: [subagent('Explore — mapping how Projects are listed today'), subagent('Explore — reading settings', { until: Date.now() + 30000 })],
       transcript: [mk('user', 'Auto-discover git repos under C:\\Projects\\personal as Rooms, with a per-Room hide.'), mk('sub', 'Explore — mapping how Projects are listed today'), mk('sub', 'Explore — reading settings')] }),
     thread({ title: 'Fix glossary links', state: 'Needs-you', desk: 1, since: Date.now() - 42000,
       transcript: [mk('user', 'GLOSSARY.md links to docs that moved. Fix them.'), mk('agent', 'Two links point at docs/old/.')],
@@ -118,7 +134,7 @@ function advance(t) {
   t = { ...t, step: t.step + 1 };
   if (item.tool) return { ...t, transcript: [...t.transcript, mk('tool', `${item.tool} ${item.arg}`)] };
   if (item.say) return { ...t, transcript: [...t.transcript, mk('agent', item.say)] };
-  if (item.sub) return { ...t, subs: [...t.subs, Date.now() + 14000], transcript: [...t.transcript, mk('sub', item.sub)] };
+  if (item.sub) return { ...t, subs: [...t.subs, subagent(item.sub)], transcript: [...t.transcript, mk('sub', item.sub)] };
   if (item.edit) return { ...t, diff: [...t.diff.filter(d => d.file !== item.edit), { file: item.edit, patch: item.patch }], transcript: [...t.transcript, mk('tool', `Edit ${item.edit}`)] };
   if (item.ask) return { ...t, state: 'Needs-you', pending: item.ask, since: Date.now() };
   if (item.end) return { ...t, state: 'Idle', transcript: [...t.transcript, mk('agent', item.end)] };
@@ -136,7 +152,20 @@ function reducer(s, a) {
       let used = slotsUsed(s);
       const now = Date.now();
       const threads = s.threads.map(t => {
-        if (t.subs.length && t.subs.some(x => x < now)) t = { ...t, subs: t.subs.filter(x => x >= now) };
+        if (t.subs.length) {
+          const done = [];
+          const subs = t.subs.filter(x => !x.gone || x.gone > now).map(x => {
+            if (x.status !== 'running' || x.asking) return x;
+            if (now > x.until) {
+              const failed = Math.random() < 0.15;
+              done.push(mk('sub', `${x.type} — ${failed ? 'failed: tool error' : 'completed: ' + FINISH[x.type]}`));
+              return { ...x, status: failed ? 'failed' : 'completed', summary: failed ? 'tool error' : FINISH[x.type] ?? 'Done.', gone: now + 4500 };
+            }
+            if (Math.random() < 0.5) { const l = SUMMARIES[x.type] ?? SUMMARIES.Explore; return { ...x, tools: x.tools + 1, summary: l[x.tools % l.length] }; }
+            return x;
+          });
+          t = { ...t, subs, transcript: done.length ? [...t.transcript, ...done] : t.transcript };
+        }
         if (t.state === 'Starting') return { ...t, state: 'Working' };
         if (t.state === 'Working' && Math.random() < 0.45) return advance(t);
         if (t.state === 'Queued' && used < CAP) { used++; return { ...t, state: 'Starting', desk: t.desk ?? freeDesk(s.threads, t.room), transcript: [...t.transcript, mk('system', 'Slot free — worktree created, starting.')] }; }
@@ -149,13 +178,13 @@ function reducer(s, a) {
       const t = s.threads.find(t => t.id === a.id);
       return { ...s, selected: a.id, room: t ? t.room : s.room };
     }
-    case 'allow': return upd(a.id, t => ({ ...t, state: 'Working', pending: null, since: null, transcript: [...t.transcript, mk('system', `✓ Allowed: ${t.pending.tool} ${t.pending.input}`)] }));
-    case 'deny': return upd(a.id, t => ({ ...t, state: 'Working', pending: null, since: null, step: t.step + 1, transcript: [...t.transcript, mk('system', `✕ Denied: ${t.pending.tool}`)] }));
+    case 'allow': return upd(a.id, t => ({ ...t, subs: t.subs.map(x => ({ ...x, asking: false })), state: 'Working', pending: null, since: null, transcript: [...t.transcript, mk('system', `✓ Allowed: ${t.pending.tool} ${t.pending.input}`)] }));
+    case 'deny': return upd(a.id, t => ({ ...t, subs: t.subs.map(x => ({ ...x, asking: false })), state: 'Working', pending: null, since: null, step: t.step + 1, transcript: [...t.transcript, mk('system', `✕ Denied: ${t.pending.tool}`)] }));
     case 'answer': return upd(a.id, t => ({ ...t, state: 'Working', pending: null, since: null, transcript: [...t.transcript, mk('user', a.option)] }));
     case 'send': return upd(a.id, t => {
       const msg = mk('user', a.text);
       if (t.state === 'Working') return { ...t, transcript: [...t.transcript, { ...msg, steer: true }] };
-      if (t.state === 'Needs-you') return { ...t, state: 'Working', pending: null, since: null, transcript: [...t.transcript, mk('system', `✕ Denied: ${t.pending.tool ?? 'question'}`), msg] };
+      if (t.state === 'Needs-you') return { ...t, subs: t.subs.map(x => ({ ...x, asking: false })), state: 'Working', pending: null, since: null, transcript: [...t.transcript, mk('system', `✕ Denied: ${t.pending.tool ?? 'question'}`), msg] };
       return resume(t, { transcript: [...t.transcript, msg], script: [...t.script.slice(0, t.step), ...replyScript(a.text)] });
     });
     case 'interrupt': return upd(a.id, t => ({ ...t, state: 'Idle', pending: null, transcript: [...t.transcript, mk('system', 'Interrupted.')] }));
@@ -187,10 +216,24 @@ function reducer(s, a) {
       const ids = s.threads.filter(t => t.room === s.room && !ENDED.includes(t.state) && t.state !== 'Needs-you').slice(-2).map(t => t.id);
       return { ...s, threads: s.threads.map(t => ids.includes(t.id) ? { ...t, state: 'Done', subs: [] } : t) };
     }
-    case 'sub': {
-      const cands = s.threads.filter(t => RUNNING.includes(t.state));
-      const t = cands.find(t => t.id === s.selected) ?? cands.find(t => t.room === s.room) ?? cands[0]; if (!t) return s;
-      return upd(t.id, t => ({ ...t, subs: [...t.subs, Date.now() + 12000], transcript: [...t.transcript, mk('sub', 'general-purpose — spawned')] }));
+    case 'sub': case 'nested': case 'subAsk': case 'burst': {
+      const cands = s.threads.filter(t => t.state === 'Working' || t.state === 'Starting');
+      const pick = cands.find(t => t.id === s.selected) ?? cands.find(t => t.room === s.room) ?? cands[0]; if (!pick) return s;
+      return upd(pick.id, t => {
+        const running = t.subs.filter(x => x.status === 'running');
+        if (a.type === 'nested') {
+          const p = running.find(x => x.depth === 1); if (!p) return t;
+          const n = subagent(`Explore — looking something up for ${p.type}`, { depth: 2, parent: p.id });
+          return { ...t, subs: [...t.subs, n], transcript: [...t.transcript, mk('sub', `${n.type} (inside ${p.type}) — ${n.desc}`)] };
+        }
+        if (a.type === 'subAsk') {
+          const x = running[0] ?? subagent(SUB_SPECS[1]); const subs = running[0] ? t.subs : [...t.subs, x];
+          return { ...t, subs: subs.map(y => y.id === x.id ? { ...y, asking: true } : y), state: 'Needs-you', since: Date.now(),
+            pending: { kind: 'permission', tool: 'Bash', input: 'npm ls three', reason: `Asked by its ${x.type} Subagent (agentID ${x.id}).`, agent: x.id, agentType: x.type } };
+        }
+        const add = Array.from({ length: a.type === 'burst' ? 5 : 1 }, (_, i) => subagent(SUB_SPECS[(t.subs.length + i) % SUB_SPECS.length]));
+        return { ...t, subs: [...t.subs, ...add], transcript: [...t.transcript, ...add.map(x => mk('sub', `${x.type} — ${x.desc}`))] };
+      });
     }
     case 'hide': return { ...s, hidden: [...s.hidden, a.room], room: s.room === a.room ? s.projects.find(p => p !== a.room && !s.hidden.includes(p)) : s.room };
     case 'unhide': return { ...s, hidden: s.hidden.filter(r => r !== a.room) };
@@ -267,6 +310,7 @@ function mountScene(el, cb) {
   };
   const ro = new ResizeObserver(resize); ro.observe(el); resize();
 
+  const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
   const anchors = new Map();
   const anchorFor = id => { if (!anchors.has(id)) anchors.set(id, document.createElement('div')); return anchors.get(id); };
   const RING = new THREE.RingGeometry(0.22, 0.28, 32);
@@ -314,6 +358,14 @@ function mountScene(el, cb) {
     if (!down) return; moved += Math.abs(e.movementX) + Math.abs(e.movementY);
     if (P?.variant === 'C') panX(e.movementX);
   });
+  renderer.domElement.addEventListener('pointermove', e => {
+    if (down) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    ptr.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ptr, camera);
+    const h = ray.intersectObjects([...chars.values()].map(c => c.holder), true).find(h => h.object.userData.hover);
+    cb.onHover(h ? h.object.userData.hover : null);
+  });
   renderer.domElement.addEventListener('wheel', e => {
     if (P?.variant !== 'C') return; e.preventDefault();
     if (e.ctrlKey) { camera.zoom = THREE.MathUtils.clamp(camera.zoom * (e.deltaY > 0 ? 0.9 : 1.1), 0.3, 4); camera.updateProjectionMatrix(); goal = null; }
@@ -353,7 +405,8 @@ function mountScene(el, cb) {
     root.traverse(o => { bones[o.name] = o; o.userData.id = pickId; });
     const armBase = ['arm-left', 'arm-right'].filter(n => bones[n]).map(n => [bones[n], bones[n].quaternion.clone()]);
     const sel = new THREE.Mesh(RING, ringMat('#fafafa')); sel.rotation.x = -Math.PI / 2; sel.position.y = 0.015; sel.scale.setScalar(1.25); sel.visible = false; holder.add(sel);
-    if (seed === pickId) { const label = new CSS2DObject(anchorFor(pickId)); label.position.y = 0.95; holder.add(label); }
+    { const label = new CSS2DObject(anchorFor(seed)); label.position.y = seed === pickId ? 0.95 : 0.62; holder.add(label); }
+    root.traverse(o => { o.userData.hover = seed; });
     scene.add(holder);
     return { holder, mixer, bones, armBase, sel, gltf: g, clipName: null, phase: Math.random() * 10, path: [], dest: null };
   }
@@ -418,17 +471,20 @@ function mountScene(el, cb) {
       c.leaving = false; live.add(t.id);
       c.role = t.state === 'Working' || t.state === 'Starting' ? 'typing' : t.state === 'Needs-you' ? 'hand' : 'still';
       c.sel.visible = t.id === p.selected;
-      // Subagents: smaller Characters standing beside the parent's desk, no desk of their own
-      t.subs.slice(0, 3).forEach((_, i) => {
-        const sid = `${t.id}~${i}`; live.add(sid);
+      // Subagents: smaller Characters beside the parent's desk (A pops in, B walks in); C has none — the card covers it
+      if (p.sv !== 'C') shownSubs(t).forEach((x, i) => {
+        const sid = `${t.id}~${x.id}`; live.add(sid);
         let sc = chars.get(sid);
-        const sspot = { pos: spot.pos.clone().add(V3(0.55 + 0.32 * i, -0.08, 0.1)), rot: -0.5, seated: false };
-        if (!sc) { sc = makeChar(sid, t.id, 0.42); sc.room = t.room; sc.sub = true; chars.set(sid, sc); sc.holder.position.copy(warm && p.walk ? doorOf(L).inside : sspot.pos); sc.walked = true; place(sc, sspot, L, false); }
-        else { const O = old[t.room]; if (O && (O.ox !== L.ox || O.oz !== L.oz)) { const d = V3(L.ox - O.ox, 0, L.oz - O.oz); sc.holder.position.add(d); sc.path.forEach(q => q.add(d)); } place(sc, sspot, L, false); }
-        sc.leaving = false; sc.role = 'still';
+        const sspot = { pos: spot.pos.clone().add(x.depth > 1 ? V3(0.55 + 0.32 * i, -0.08, -0.25) : V3(0.55 + 0.32 * i, -0.08, 0.1)), rot: -0.5, seated: false };
+        if (!sc) {
+          sc = makeChar(sid, t.id, x.depth > 1 ? 0.32 : 0.42); sc.room = t.room; sc.sub = true; chars.set(sid, sc);
+          if (p.sv === 'B' && warm) { sc.holder.position.copy(doorOf(L).outside); sc.walked = true; place(sc, sspot, L, true); }
+          else { sc.holder.position.copy(sspot.pos); sc.holder.scale.setScalar(0.01); sc.pop = true; sc.walked = false; place(sc, sspot, L, false); }
+        } else { const O = old[t.room]; if (O && (O.ox !== L.ox || O.oz !== L.oz)) { const d = V3(L.ox - O.ox, 0, L.oz - O.oz); sc.holder.position.add(d); sc.path.forEach(q => q.add(d)); } sc.walked = true; place(sc, sspot, L, false); }
+        sc.leaving = false; sc.role = x.asking ? 'hand' : 'still';
       });
     }
-    for (const [id, c] of chars) if (!live.has(id)) { if (!byName[c.room]) { scene.remove(c.holder); chars.delete(id); } else leave(id, c); }
+    for (const [id, c] of chars) if (!live.has(id)) { if (!byName[c.room]) { scene.remove(c.holder); chars.delete(id); } else if (c.sub && p.sv !== 'B') c.shrink = true; else leave(id, c); }
 
     // camera
     const first = prev.variant === undefined;
@@ -444,7 +500,6 @@ function mountScene(el, cb) {
 
   assets.then(a => { A = a; if (P) update(P); });
 
-  const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
   renderer.domElement.addEventListener('click', e => {
     if (moved > 6) return; // that was a drag
     const r = renderer.domElement.getBoundingClientRect();
@@ -472,6 +527,8 @@ function mountScene(el, cb) {
     }
     if (controls.enabled) controls.update(); else camera.lookAt(controls.target);
     for (const [id, c] of chars) {
+      if (c.pop) { const k = Math.min(1, c.holder.scale.x + dt * 4); c.holder.scale.setScalar(k); if (k >= 1) c.pop = false; }
+      if (c.shrink) { const k = c.holder.scale.x - dt * 4; if (k <= 0.02) { scene.remove(c.holder); chars.delete(id); continue; } c.holder.scale.setScalar(k); }
       if (c.path.length) {
         const nxt = c.path[0], v = V3(nxt.x - c.holder.position.x, 0, nxt.z - c.holder.position.z), dist = v.length();
         if (dist > 0.02) { c.holder.position.addScaledVector(v.normalize(), Math.min(dist, 1.7 * dt)); c.holder.position.y = 0; c.holder.rotation.y = Math.atan2(v.x, v.z); setClip(c, 'walk'); }
@@ -493,16 +550,19 @@ function mountScene(el, cb) {
   return { update, anchorFor, dispose: () => { cancelAnimationFrame(raf); ro.disconnect(); renderer.dispose(); el.innerHTML = ''; } };
 }
 
-function Scene({ style, view, threads, rooms, bubble, label, onPick, onRoom, onStats }) {
+function Scene({ style, view, threads, rooms, bubble, subBubble, label, onPick, onRoom, onStats, onHover }) {
   const el = useRef(), sc = useRef(), [ready, setReady] = useState(false);
-  const cb = useRef({}); cb.current = { onPick, onRoom, onStats };
-  useEffect(() => { sc.current = mountScene(el.current, { onPick: id => cb.current.onPick(id), onRoom: r => cb.current.onRoom(r), onStats: s => cb.current.onStats(s) }); setReady(true); return () => sc.current.dispose(); }, []);
+  const cb = useRef({}); cb.current = { onPick, onRoom, onStats, onHover };
+  useEffect(() => { sc.current = mountScene(el.current, { onPick: id => cb.current.onPick(id), onRoom: r => cb.current.onRoom(r), onStats: s => cb.current.onStats(s), onHover: h => cb.current.onHover(h) }); setReady(true); return () => sc.current.dispose(); }, []);
   useLayoutEffect(() => { sc.current?.update({ ...view, threads, rooms }); }, [view, threads, rooms, ready]);
   return html`<div className="absolute inset-y-0 left-0 transition-[right] duration-200" style=${style}><div className="relative h-full w-full overflow-hidden">
     <div ref=${el} className="absolute inset-0"></div>
     ${ready && threads.filter(t => !ENDED.includes(t.state)).map(t => createPortal(
       html`<div className="pointer-events-auto -translate-y-1/2" onClick=${e => { e.stopPropagation(); onPick(t.id); }}>${bubble(t)}</div>`,
       sc.current.anchorFor(t.id), t.id))}
+    ${ready && view.sv !== 'C' && threads.filter(t => !ENDED.includes(t.state)).flatMap(t => shownSubs(t).map(x => createPortal(
+      html`<div className="pointer-events-auto -translate-y-1/2" onClick=${e => { e.stopPropagation(); onPick(t.id); }}>${subBubble(t, x)}</div>`,
+      sc.current.anchorFor(`${t.id}~${x.id}`), x.id)))}
     ${ready && rooms.map(r => createPortal(label(r), sc.current.anchorFor('room:' + r.name), 'room:' + r.name))}
   </div></div>`;
 }
@@ -527,6 +587,8 @@ const waited = t => { if (!t.since) return ''; const s = Math.floor((Date.now() 
 const stats = t => t.diff.reduce((a, d) => { for (const l of d.patch) { if (l[0] === '+') a.add++; if (l[0] === '-') a.del++; } return a; }, { add: 0, del: 0 });
 const needing = s => s.threads.filter(t => t.state === 'Needs-you').sort((a, b) => a.since - b.since);
 const visible = s => s.projects.filter(p => !s.hidden.includes(p));
+const shownSubs = t => t.subs.slice(0, 3); // up to 3 Subagent Characters, then a '+N' tag
+const liveSubs = t => t.subs.filter(x => x.status === 'running');
 
 function Pending({ t, api, compact }) {
   const p = t.pending; if (!p) return null;
@@ -613,7 +675,9 @@ const RoomTabs = ({ s, api, className = '' }) => html`<div className=${'flex fle
 </div>`;
 
 // ============================== the Inbox shell (#8) hosting the floor variants ==============================
-function Office({ s, api, variant }) {
+function Office({ s, api, variant: sv }) {
+  const variant = 'A'; // floor is fixed to Campus (#10); sv picks the Subagent presentation
+  const [hover, setHover] = useState(null);
   const [top, setTop] = useState(false), [walk, setWalk] = useState(true), [fitN, setFitN] = useState(0), [st, setSt] = useState(null);
   const sel = s.threads.find(t => t.id === s.selected);
   const needs = needing(s);
@@ -631,13 +695,33 @@ function Office({ s, api, variant }) {
   const threads = s.threads.filter(t => shown.includes(t.room));
   const roomsKey = JSON.stringify(rooms);
   const roomsMemo = React.useMemo(() => rooms, [roomsKey]);
-  const view = React.useMemo(() => ({ variant, top, walk, fitN, focus: s.room, selected: s.selected }), [variant, top, walk, fitN, s.room, s.selected]);
+  const view = React.useMemo(() => ({ variant, sv, top, walk, fitN, focus: s.room, selected: s.selected }), [variant, sv, top, walk, fitN, s.room, s.selected]);
 
-  const bubble = t => {
-    if (t.state === 'Needs-you') return html`<div className="relative mb-3 w-56 cursor-pointer rounded-xl bg-zinc-950/95 p-1 shadow-xl ring-2 ring-amber-500">
-      <div className="px-2 pt-1 text-[11px] text-amber-300">${t.title}</div>
+  const needsBubble = (t, by) => html`<div className="relative mb-3 w-56 cursor-pointer rounded-xl bg-zinc-950/95 p-1 shadow-xl ring-2 ring-amber-500">
+      <div className="px-2 pt-1 text-[11px] text-amber-300">${by ? html`<span className="text-violet-300">◆ ${by.type}</span> for ` : ''}${t.title}</div>
       <${Pending} t=${t} api=${api} compact />
       <div className="absolute -bottom-2 left-1/2 h-4 w-4 -translate-x-1/2 rotate-45 bg-zinc-950 ring-2 ring-amber-500 [clip-path:polygon(100%_0,100%_100%,0_100%)]"></div></div>`;
+  const crewCard = t => html`<div className="mb-2 w-60 cursor-pointer rounded-lg bg-zinc-950/95 p-1.5 text-[10px] shadow-xl ring-1 ring-violet-500/70">
+      <div className="mb-1 flex items-center gap-1 px-0.5 font-semibold text-violet-300">◆ ${liveSubs(t).length} subagent${liveSubs(t).length === 1 ? '' : 's'} working</div>
+      ${t.subs.slice(0, 5).map(x => html`<div key=${x.id} className=${'flex items-center gap-1.5 rounded px-1 py-0.5 ' + (x.asking ? 'bg-amber-500/20' : '')} style=${{ paddingLeft: 4 + (x.depth - 1) * 10 }}>
+        <span className=${'h-1.5 w-1.5 shrink-0 rounded-full ' + (x.asking ? 'bg-amber-400' : SUB_DOT[x.status])}></span>
+        <span className="shrink-0 text-zinc-200">${x.depth > 1 ? '↳ ' : ''}${x.type}</span>
+        <span className=${'truncate ' + (x.status === 'failed' ? 'text-red-300' : x.status === 'completed' ? 'text-emerald-300' : 'text-zinc-400')}>${x.asking ? 'needs you ↑' : x.summary}</span>
+        <span className="ml-auto shrink-0 text-zinc-600">${x.tools}⚒</span></div>`)}
+      ${t.subs.length > 5 && html`<div className="px-1 text-zinc-500">+${t.subs.length - 5} more</div>`}</div>`;
+  const subBubble = (t, x) => {
+    if (x.asking && t.state === 'Needs-you') return needsBubble(t, x);
+    if (x.status === 'completed') return html`<div className="max-w-[170px] truncate rounded-full bg-emerald-600 px-2 text-[10px] font-semibold">✓ ${x.summary}</div>`;
+    if (x.status === 'failed') return html`<div className="rounded-full bg-red-600 px-2 text-[10px] font-semibold">✕ ${x.type} failed</div>`;
+    const hovered = hover === `${t.id}~${x.id}`;
+    if (sv === 'B' && !hovered) return null;
+    return html`<div className="max-w-[180px] truncate rounded-full bg-violet-950/90 px-2 text-[10px] text-violet-100 ring-1 ring-violet-500/60"><b>${x.depth > 1 ? '↳ ' : ''}${x.type}</b> · ${x.summary}${hovered ? ` · ${x.tools} tools` : ''}</div>`;
+  };
+  const bubble = t => {
+    const asker = t.subs.find(x => x.asking);
+    if (t.state === 'Needs-you' && asker && sv !== 'C' && shownSubs(t).includes(asker)) return null;
+    if (sv === 'C' && t.subs.length && t.state !== 'Needs-you') return crewCard(t);
+    if (t.state === 'Needs-you') return needsBubble(t, asker);
     if (t.state === 'Failed') return html`<div className="cursor-pointer rounded-full bg-red-600 px-2 text-[10px] font-bold">failed</div>`;
     if (t.state === 'Idle') return html`<div className="cursor-pointer rounded-full bg-zinc-800/90 px-2 text-[10px] text-zinc-300">…your turn</div>`;
     if (t.subs.length > 3) return html`<div className="rounded-full bg-violet-600 px-1.5 text-[10px] font-bold">+${t.subs.length - 3} subagents</div>`;
@@ -662,6 +746,7 @@ function Office({ s, api, variant }) {
           ${needs.length === 0 && html`<div className="text-xs text-zinc-500">Nothing waiting on you.</div>`}
           ${needs.map(t => html`<div key=${t.id} className="rounded-lg border border-zinc-800 bg-zinc-900 p-2 space-y-1.5">
             <button onClick=${() => api.select(t.id)} className="flex w-full items-center gap-2 text-left text-xs"><span className="text-zinc-500">${t.room}</span><span className="truncate font-medium">${t.title}</span><span className="ml-auto text-amber-300">${waited(t)}</span></button>
+            ${t.pending?.agent && html`<div className="text-[11px] text-violet-300">◆ asked by its ${t.pending.agentType} Subagent</div>`}
             <${Pending} t=${t} api=${api} compact /></div>`)}
         </div>
         <div className="p-3 pt-1 space-y-1">
@@ -672,7 +757,7 @@ function Office({ s, api, variant }) {
       </div>
     </aside>
     <main className="relative min-w-0 flex-1">
-      <${Scene} style=${{ right: sel ? 460 : 0 }} view=${view} threads=${threads} rooms=${roomsMemo} bubble=${bubble} label=${label}
+      <${Scene} style=${{ right: sel ? 460 : 0 }} view=${view} threads=${threads} rooms=${roomsMemo} bubble=${bubble} subBubble=${subBubble} label=${label} onHover=${setHover}
         onPick=${id => id ? api.select(id) : api.select(null)} onRoom=${api.room} onStats=${setSt} />
       <div className="pointer-events-none absolute left-3 top-3 flex max-w-[60%] flex-col gap-2">
         <${RoomTabs} s=${s} api=${api} className="pointer-events-auto rounded-lg bg-zinc-950/80 p-1" />
@@ -688,7 +773,8 @@ function Office({ s, api, variant }) {
       <div className="absolute top-3 z-20 w-56 space-y-1.5 rounded-lg border-2 border-fuchsia-300/70 bg-zinc-950/90 p-2 text-xs transition-[right] duration-200" style=${{ right: (sel ? 460 : 0) + 12 }}>
         <div className="font-semibold text-fuchsia-200">Prototype stress panel</div>
         <div className="flex items-center gap-1">Rooms <${Btn} size="xs" onClick=${api.removeProject}>−</${Btn}><b>${s.projects.length}</b><${Btn} size="xs" onClick=${api.addProject}>+</${Btn}></div>
-        <div className="flex flex-wrap gap-1"><${Btn} size="xs" onClick=${() => api.fill(s.room, 3)}>+3 Threads in ${s.room}</${Btn}><${Btn} size="xs" onClick=${api.endSome}>End 2</${Btn}><${Btn} size="xs" onClick=${api.sub}>+ Subagent</${Btn}></div>
+        <div className="flex flex-wrap gap-1"><${Btn} size="xs" onClick=${() => api.fill(s.room, 3)}>+3 Threads in ${s.room}</${Btn}><${Btn} size="xs" onClick=${api.endSome}>End 2</${Btn}></div>
+        <div className="flex flex-wrap gap-1"><${Btn} size="xs" onClick=${api.sub}>+ Subagent</${Btn}><${Btn} size="xs" onClick=${api.burst}>+5</${Btn}><${Btn} size="xs" onClick=${api.nested}>+ nested</${Btn}><${Btn} size="xs" onClick=${api.subAsk}>Subagent asks</${Btn}></div>
         <label className="flex items-center gap-1.5"><input type="checkbox" checked=${walk} onChange=${e => setWalk(e.target.checked)} /> Walk in / out</label>
         ${st && html`<div className="font-mono text-[10px] text-zinc-400">${st.fps} fps · ${st.draws} draws · ${(st.tris / 1000).toFixed(0)}k tris · ${st.chars} chars</div>`}
         <div className="text-[10px] text-zinc-500">T toggles Top · ${variant === 'A' ? 'drag pans, right-drag rotates, wheel zooms' : variant === 'B' ? 'wheel zooms; tabs switch Rooms' : 'drag/wheel scrolls the corridor, Ctrl+wheel zooms'}</div>
@@ -700,6 +786,14 @@ function Office({ s, api, variant }) {
           <${Actions} t=${sel} api=${api} />
         </div>
         ${sel.pending && html`<div className="border-b border-zinc-800 p-2"><${Pending} t=${sel} api=${api} /></div>`}
+        ${sel.subs.length > 0 && html`<div className="border-b border-zinc-800 p-2 space-y-1">
+          <div className="text-xs font-semibold uppercase tracking-wide text-violet-300">Subagents · ${liveSubs(sel).length} running</div>
+          ${sel.subs.map(x => html`<div key=${x.id} className="flex items-center gap-2 text-xs" style=${{ paddingLeft: (x.depth - 1) * 14 }}>
+            <span className=${'h-2 w-2 shrink-0 rounded-full ' + (x.asking ? 'bg-amber-400' : SUB_DOT[x.status])}></span>
+            <span className="shrink-0 font-medium">${x.depth > 1 ? '↳ ' : ''}${x.type}</span><span className="truncate text-zinc-500">${x.desc}</span>
+            <span className="ml-auto shrink-0 truncate text-zinc-400">${x.asking ? 'needs you' : x.summary}</span>
+            <span className="shrink-0 font-mono text-[10px] text-zinc-600">${x.tools} tools · ${Math.round((Date.now() - x.started) / 1000)}s</span></div>`)}
+        </div>`}
         <${Transcript} t=${sel} />
         <details className="max-h-[40%] overflow-y-auto border-t border-zinc-800"><summary className="cursor-pointer px-3 py-2 text-sm text-zinc-300">Changes · ${sel.diff.length} files</summary><${Changes} t=${sel} /></details>
         <${Composer} t=${sel} api=${api} />
@@ -709,7 +803,7 @@ function Office({ s, api, variant }) {
 }
 
 // ============================== app + switcher ==============================
-const VARIANTS = { A: 'Campus', B: 'One Room', C: 'Corridor' };
+const VARIANTS = { A: 'Huddle', B: 'Walk-ins', C: 'Crew card' };
 const KEYS = Object.keys(VARIANTS);
 
 function Switcher({ v, set }) {
@@ -739,7 +833,7 @@ function App() {
     allow: id => d('allow', { id }), deny: (id, note) => d('deny', { id, note }), answer: (id, option) => d('answer', { id, option }), send: (id, text) => d('send', { id, text }),
     interrupt: id => d('interrupt', { id }), stop: id => d('stop', { id }), done: id => d('done', { id }), retry: id => d('retry', { id }), end: id => d('end', { id }), discard: id => d('discard', { id }),
     newThread: o => d('new', o), hide: room => d('hide', { room }), unhide: room => d('unhide', { room }),
-    addProject: () => d('addProject'), removeProject: () => d('removeProject'), fill: (room, n) => d('fill', { room, n }), endSome: () => d('endSome'), sub: () => d('sub'),
+    addProject: () => d('addProject'), removeProject: () => d('removeProject'), fill: (room, n) => d('fill', { room, n }), endSome: () => d('endSome'), sub: () => d('sub'), nested: () => d('nested'), subAsk: () => d('subAsk'), burst: () => d('burst'),
   };
   return html`<${React.Fragment}><${Office} key=${v} s=${s} api=${api} variant=${v} /><${Switcher} v=${v} set=${set} /></${React.Fragment}>`;
 }
