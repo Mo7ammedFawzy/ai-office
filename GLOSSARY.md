@@ -32,6 +32,10 @@ _Avoid_: Avatar, worker, bot
 The state of a Thread that cannot continue until the user answers it, such as a permission request or a question.
 _Avoid_: Blocked, waiting, paused
 
+**Ticket**:
+A written-down piece of work kept in a Project's `.scratch` folder, which a Thread can be started from.
+_Avoid_: Issue, task, card
+
 **Base branch**:
 The branch of a Project that a Thread starts from and is compared against; chosen when the Thread is started, defaulting to the Project's default branch.
 _Avoid_: Parent branch, target
