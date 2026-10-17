@@ -20,9 +20,10 @@ const RING = new THREE.RingGeometry(0.22, 0.28, 32)
 // Anything still moving asks for another frame; the ticker grants at most one per 33 ms.
 let wantFrame = false
 
-type View = { room?: string; n: number } // n bumps on every Fit / focus request
+export type View = { room?: string; n: number } // n bumps on every Fit / focus request
 
-type Props = { rooms: string[]; threads: Thread[]; selected?: string; onSelect: (id: string) => void }
+// fly: focus requests from outside the scene (the Room tabs).
+type Props = { rooms: string[]; threads: Thread[]; selected?: string; fly: View; onSelect: (id: string) => void }
 
 // Without WebGL the scene throws; the panels must keep working.
 export class Campus extends Component<Props, { error?: string }> {
@@ -40,7 +41,7 @@ export class Campus extends Component<Props, { error?: string }> {
   }
 }
 
-function Scene({ rooms, threads, selected, onSelect }: Props) {
+function Scene({ rooms, threads, selected, fly, onSelect }: Props) {
   const [top, setTop] = useState(false)
   const [view, setView] = useState<View>({ n: 0 })
   const live = threads.filter((t) => !t.ended && rooms.includes(t.room))
@@ -62,6 +63,9 @@ function Scene({ rooms, threads, selected, onSelect }: Props) {
   useEffect(() => {
     if (selRoom) focus(selRoom)
   }, [selected]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (fly.n) focus(fly.room)
+  }, [fly.n]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="relative min-h-0 flex-1">

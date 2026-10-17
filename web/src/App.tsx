@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Campus, useNow } from './Campus.tsx'
+import { Campus, useNow, type View } from './Campus.tsx'
 import { endedNewestFirst, post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Subagent, type Thread } from './office.ts'
 import { askerOf } from './campus.ts'
 import type { Ticket } from '../../server/tickets.ts'
@@ -18,13 +18,17 @@ const STATE_STYLE: Record<State, string> = {
   failed: 'bg-red-700 text-white',
 }
 
-const StateChip = ({ state }: { state: State }) => <span className={`rounded px-1.5 py-0.5 text-xs ${STATE_STYLE[state]}`}>{state}</span>
+// The Centre's state counts over live Threads; Starting counts as Working.
+const COUNTED: [string, State[]][] = [['Working', ['starting', 'working']], ['Needs you', ['needs-you']], ['Idle', ['idle']], ['Queued', ['queued']], ['Failed', ['failed']]]
+
+const StateChip =({ state }: { state: State }) => <span className={`rounded px-1.5 py-0.5 text-xs ${STATE_STYLE[state]}`}>{state}</span>
 
 export function App() {
   const office = useOffice()
   const { connected, rooms, threads } = office
   const [showHidden, setShowHidden] = useState(false)
   const [selected, setSelected] = useState<string>()
+  const [fly, setFly] = useState<View>({ n: 0 })
   const visible = rooms.filter((r) => !r.hidden)
   const hidden = rooms.filter((r) => r.hidden)
   const thread = threads.find((t) => t.id === selected)
@@ -103,7 +107,9 @@ export function App() {
         <nav className="flex flex-wrap items-center gap-1 border-b border-slate-800 px-3 py-2">
           {visible.map((r) => (
             <span key={r.name} className="flex items-center gap-1 rounded bg-slate-800 px-2 py-1">
-              {r.name}
+              <button className="hover:text-white" title="Fly to this Room" onClick={() => setFly((f) => ({ room: r.name, n: f.n + 1 }))}>
+                {r.name}
+              </button>
               {needy.some((t) => t.room === r.name) && <span className="rounded bg-amber-500 px-1 text-xs text-black">{needy.filter((t) => t.room === r.name).length}</span>}
               <button title="Hide Room" className="text-slate-500 hover:text-slate-200" onClick={() => post(roomPath(r.name, 'hide'))}>
                 ✕
@@ -126,12 +132,19 @@ export function App() {
               )}
             </span>
           )}
-          <button className="ml-auto rounded px-2 py-1 text-slate-400 hover:bg-slate-800" onClick={() => post('rooms/refresh')}>
+          <span className="ml-auto flex gap-2 text-xs text-slate-400">
+            {COUNTED.map(([label, states]) => (
+              <span key={label}>
+                {label} <b className="text-slate-200">{threads.filter((t) => !t.ended && states.includes(t.state)).length}</b>
+              </span>
+            ))}
+          </span>
+          <button className="rounded px-2 py-1 text-slate-400 hover:bg-slate-800" onClick={() => post('rooms/refresh')}>
             Refresh
           </button>
           {!connected && <span className="text-amber-400">reconnecting…</span>}
         </nav>
-        <Campus rooms={visible.map((r) => r.name)} threads={threads} selected={selected} onSelect={setSelected} />
+        <Campus rooms={visible.map((r) => r.name)} threads={threads} selected={selected} fly={fly} onSelect={setSelected} />
       </main>
 
       {thread && <Drawer key={thread.id} thread={thread} entries={office.entries[thread.id]} load={office.loadEntries} connected={connected} onClose={() => setSelected(undefined)} />}
