@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Campus } from './Campus.tsx'
 import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Thread } from './office.ts'
 
 const roomPath = (name: string, action: string) => `rooms/${encodeURIComponent(name)}/${action}`
@@ -99,22 +100,7 @@ export function App() {
           </button>
           {!connected && <span className="text-amber-400">reconnecting…</span>}
         </nav>
-        {/* The Campus scene replaces this grid. */}
-        <div className="grid flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-3 overflow-auto p-4">
-          {visible.map((r) => (
-            <div key={r.name} className="rounded border border-slate-800 p-3">
-              <div className="mb-2 font-medium">{r.name}</div>
-              {threads
-                .filter((t) => t.room === r.name && !t.ended)
-                .map((t) => (
-                  <button key={t.id} onClick={() => setSelected(t.id)} className={`flex w-full items-center gap-2 rounded px-1 py-1 text-left hover:bg-slate-800 ${t.id === selected ? 'bg-slate-800' : ''}`}>
-                    <span className="min-w-0 flex-1 truncate">{t.title}</span>
-                    <StateChip state={t.state} />
-                  </button>
-                ))}
-            </div>
-          ))}
-        </div>
+        <Campus rooms={visible.map((r) => r.name)} threads={threads} selected={selected} onSelect={setSelected} />
       </main>
 
       {thread && <Drawer key={thread.id} thread={thread} entries={office.entries[thread.id]} load={office.loadEntries} connected={connected} onClose={() => setSelected(undefined)} />}
