@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { load, save } from './office.ts'
 import { discover } from './rooms.ts'
+import { createThreads, HttpError } from './threads.ts'
 
 const PORT = 4310
 const office = load()
@@ -17,22 +18,49 @@ const broadcast = (msg: object) => {
   const s = JSON.stringify(msg)
   for (const c of wss.clients) c.send(s)
 }
-wss.on('connection', (ws) => ws.send(JSON.stringify({ ...roomsMsg(), type: 'snapshot' })))
+wss.on('connection', (ws) =>
+  ws.send(JSON.stringify({ ...roomsMsg(), type: 'snapshot', threads: office.threads, maxRunning: office.maxRunning })),
+)
 
-// Commands. Each returns an HTTP status.
-function command(path: string): number {
-  if (path === '/api/rooms/refresh') {
-    rooms = discover(office.projectsRoot)
-  } else {
-    const m = path.match(/^\/api\/rooms\/([^/]+)\/(hide|show)$/)
-    const name = m && decodeURIComponent(m[1])
-    if (!m || !name || !rooms.includes(name)) return 404
-    office.hidden = office.hidden.filter((n) => n !== name)
-    if (m[2] === 'hide') office.hidden.push(name)
-    save(office)
-  }
+const threads = createThreads(office, () => rooms, broadcast)
+
+function setHidden(name: string, hide: boolean) {
+  if (!rooms.includes(name)) throw new HttpError(404, 'No such Room')
+  office.hidden = office.hidden.filter((n) => n !== name)
+  if (hide) office.hidden.push(name)
+  save(office)
   broadcast(roomsMsg())
-  return 204
+}
+
+type Route = [method: string, path: RegExp, handle: (m: string[], body: any) => unknown]
+const routes: Route[] = [
+  ['POST', /^\/api\/rooms\/refresh$/, () => {
+    rooms = discover(office.projectsRoot)
+    broadcast(roomsMsg())
+  }],
+  ['POST', /^\/api\/rooms\/([^/]+)\/(hide|show)$/, (m) => setHidden(m[1], m[2] === 'hide')],
+  ['POST', /^\/api\/threads$/, (_, body) => threads.start(body)],
+  ['POST', /^\/api\/threads\/([^/]+)\/send$/, (m, body) => threads.send(m[1], body.text)],
+  ['POST', /^\/api\/threads\/([^/]+)\/(interrupt|stop|done|retry|end|discard)$/, (m) => threads.act(m[1], m[2])],
+  ['GET', /^\/api\/threads\/([^/]+)\/entries$/, (m) => threads.entries(m[1])],
+]
+
+async function api(req: IncomingMessage, res: ServerResponse) {
+  const path = new URL(req.url!, 'http://x').pathname
+  for (const [method, re, handle] of routes) {
+    const m = path.match(re)
+    if (!m || req.method !== method) continue
+    let body: any = {}
+    if (method === 'POST') {
+      let raw = ''
+      for await (const chunk of req) raw += chunk
+      if (raw) body = JSON.parse(raw)
+    }
+    const out = await handle([...m].map(decodeURIComponent), body)
+    if (out === undefined) return res.writeHead(204).end()
+    return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out))
+  }
+  res.writeHead(404).end()
 }
 
 // The Office starts shell-capable agents, so only same-origin pages may drive it.
@@ -53,8 +81,11 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
 const server = createServer((req, res) => {
   if (req.url!.startsWith('/api/')) {
     if (foreign(req)) return res.writeHead(403).end()
-    if (req.method !== 'POST') return res.writeHead(405).end()
-    return res.writeHead(command(req.url!.split('?')[0])).end()
+    return api(req, res).catch((e) => {
+      const status = e instanceof HttpError ? e.status : e instanceof SyntaxError ? 400 : 500
+      if (status === 500) console.error(e)
+      res.writeHead(status, { 'content-type': 'text/plain' }).end(e.message)
+    })
   }
   web(req, res)
 })
