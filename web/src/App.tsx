@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Campus } from './Campus.tsx'
 import { endedNewestFirst } from '../../server/activity.ts'
-import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Thread } from './office.ts'
+import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Subagent, type Thread } from './office.ts'
+import { askerOf } from './campus.ts'
 import type { Ticket } from '../../server/tickets.ts'
 import { ChangesPanel, ChangesSummary, useChanges } from './Changes.tsx'
 
@@ -62,6 +63,7 @@ export function App() {
                 <button onClick={() => setSelected(t.id)} className="mb-1 block w-full truncate text-left text-xs text-slate-400 hover:text-slate-200">
                   {t.room} · {t.title}
                 </button>
+                {askerOf(t, t.asks[0]) && <div className="mb-1 text-xs text-violet-300">asked by its {askerOf(t, t.asks[0])!.type} Subagent</div>}
                 <AskCard key={t.asks[0].id} t={t} ask={t.asks[0]} />
                 {t.asks.length > 1 && <div className="mt-1 text-xs text-slate-500">+{t.asks.length - 1} more</div>}
               </div>
@@ -279,10 +281,14 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
       {t.asks.length > 0 && (
         <div className="flex flex-col gap-3 border-b border-amber-500/40 bg-amber-500/5 p-3">
           {t.asks.map((a) => (
-            <AskCard key={a.id} t={t} ask={a} />
+            <div key={a.id}>
+              {askerOf(t, a) && <div className="mb-1 text-xs text-violet-300">asked by its {askerOf(t, a)!.type} Subagent</div>}
+              <AskCard t={t} ask={a} />
+            </div>
           ))}
         </div>
       )}
+      {t.subagents?.length > 0 && <Subagents t={t} />}
       <div className="flex flex-1 flex-col gap-2 overflow-auto p-3">
         {entries?.map((e, i) => (
           <div key={i} className={`whitespace-pre-wrap break-words ${ENTRY_STYLE[e.kind]}`}>
@@ -308,6 +314,34 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         </div>
       )}
     </aside>
+  )
+}
+
+const SUB_DOT: Record<Subagent['status'], string> = { running: 'bg-violet-400', completed: 'bg-emerald-500', failed: 'bg-red-500', stopped: 'bg-slate-500' }
+
+function Subagents({ t }: { t: Thread }) {
+  const running = t.subagents.filter((s) => s.status === 'running').length
+  return (
+    <section className="flex flex-col gap-1 border-b border-slate-800 p-3 text-xs">
+      <h3 className="font-semibold uppercase tracking-wide text-violet-300">Subagents · {running} running</h3>
+      {t.subagents.map((s) => {
+        const asking = t.asks.some((a) => a.agentID === s.id)
+        return (
+          <div key={s.id} className="flex items-center gap-2" style={{ paddingLeft: (s.depth - 1) * 14 }}>
+            <span className={`h-2 w-2 shrink-0 rounded-full ${asking ? 'bg-amber-400' : SUB_DOT[s.status]}`} title={s.status} />
+            <span className="shrink-0 font-medium">
+              {s.depth > 1 ? '↳ ' : ''}
+              {s.type}
+            </span>
+            <span className="min-w-0 truncate text-slate-500">{s.description}</span>
+            <span className="ml-auto min-w-0 truncate text-slate-400">{asking ? 'needs you' : s.summary}</span>
+            <span className="shrink-0 font-mono text-[10px] text-slate-600">
+              {s.tools} tools · {Math.round(((s.endedAt ?? Date.now()) - s.startedAt) / 1000)}s
+            </span>
+          </div>
+        )
+      })}
+    </section>
   )
 }
 

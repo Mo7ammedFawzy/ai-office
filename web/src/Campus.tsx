@@ -5,8 +5,8 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { Clone, Html, OrbitControls, useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
-import { activityTag, doorOf, layoutCampus, lookFor, spotFor, type RoomLayout } from './campus.ts'
-import { post, type Thread } from './office.ts'
+import { activityTag, doorOf, FINISH_MS, huddle, layoutCampus, lookFor, SHRINK_MS, spotFor, type HuddleSpot, type RoomLayout } from './campus.ts'
+import { post, type Ask, type Thread } from './office.ts'
 
 const CHARS = ['male-a', 'female-a', 'male-b', 'female-b', 'male-c', 'female-c', 'female-d'].map((c) => `/assets/mini/character-${c}.glb`)
 const FURN = ['desk', 'chairDesk', 'computerScreen', 'computerKeyboard', 'wall', 'wallWindow', 'wallDoorway', 'pottedPlant'] as const
@@ -198,8 +198,8 @@ function Room({ L, threads, selected, focused, onSelect, onFocus }: { L: RoomLay
     const now = new Set(mine.map((t) => t.id))
     const gone = [...last.current.values()].filter((t) => !now.has(t.id))
     if (gone.length) setLeaving((l) => [...l.filter((t) => !now.has(t.id)), ...gone])
-    last.current = new Map(mine.map((t) => [t.id, t]))
   }, [ids]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => void (last.current = new Map(mine.map((t) => [t.id, t])))) // the latest look, so leavers keep their Subagents
   const warm = useRef(false) // Characters on the Room's first render are already seated
   useEffect(() => void (warm.current = true), [])
 
@@ -242,18 +242,20 @@ function Room({ L, threads, selected, focused, onSelect, onFocus }: { L: RoomLay
         </div>
       </Html>
       {[...mine.map((t) => [t, false] as const), ...leaving.map((t) => [t, true] as const)].map(([t, out]) => (
-        <Character
-          key={t.id}
-          t={t}
-          L={L}
-          threads={threads}
-          walkIn={warm.current}
-          leaving={out}
-          selected={t.id === selected}
-          local={local}
-          onSelect={onSelect}
-          onGone={() => setLeaving((l) => l.filter((x) => x.id !== t.id))}
-        />
+        <group key={t.id}>
+          <Character
+            t={t}
+            L={L}
+            threads={threads}
+            walkIn={warm.current}
+            leaving={out}
+            selected={t.id === selected}
+            local={local}
+            onSelect={onSelect}
+            onGone={() => setLeaving((l) => l.filter((x) => x.id !== t.id))}
+          />
+          {t.subagents?.length > 0 && <Huddle t={t} L={L} threads={threads} gone={out} selected={t.id === selected} local={local} onSelect={onSelect} />}
+        </group>
       ))}
     </group>
   )
@@ -402,34 +404,133 @@ function useDebounced<T>(value: T, ms: number) {
   return v
 }
 
+// Asks raised by a Subagent standing on the floor show over that Subagent instead.
+const huddleAsks = (t: Thread) => {
+  const ids = new Set(huddle(t.subagents ?? [], Date.now()).shown.map((h) => h.sub.id))
+  return t.asks.filter((a) => a.agentID && ids.has(a.agentID))
+}
+
+function AskBubble({ t, ask, label, more, onSelect }: { t: Thread; ask: Ask; label: string; more: number; onSelect: () => void }) {
+  const answer = (allow: boolean) => post(`threads/${t.id}/answer`, { ask: ask.id, allow })
+  return (
+    <div onClick={onSelect} className="mb-2 w-56 cursor-pointer rounded-xl bg-slate-950/95 p-2 text-xs shadow-xl ring-2 ring-amber-500">
+      <div className="truncate text-[11px] text-amber-300">{label}</div>
+      <div className="my-1 line-clamp-3 break-words font-mono text-slate-200">{ask.title}</div>
+      {ask.questions ? (
+        <button className="rounded bg-amber-500 px-2 py-0.5 font-medium text-black">Answer…</button>
+      ) : (
+        <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => answer(true)} className="rounded bg-amber-500 px-2 py-0.5 font-medium text-black hover:bg-amber-400">
+            Allow
+          </button>
+          <button onClick={() => answer(false)} className="rounded bg-slate-800 px-2 py-0.5 hover:bg-slate-700">
+            Deny
+          </button>
+        </div>
+      )}
+      {more > 0 && <div className="mt-1 text-slate-500">+{more} more</div>}
+    </div>
+  )
+}
+
 function Bubble({ t, hover, onSelect }: { t: Thread; hover: boolean; onSelect: () => void }) {
   const tag = useDebounced(t.state === 'working' ? activityTag(t.tool) : undefined, 800)
-  const ask = t.asks[0]
-  if (ask) {
-    const answer = (allow: boolean) => post(`threads/${t.id}/answer`, { ask: ask.id, allow })
-    return (
-      <div onClick={onSelect} className="mb-2 w-56 cursor-pointer rounded-xl bg-slate-950/95 p-2 text-xs shadow-xl ring-2 ring-amber-500">
-        <div className="truncate text-[11px] text-amber-300">{t.title}</div>
-        <div className="my-1 line-clamp-3 break-words font-mono text-slate-200">{ask.title}</div>
-        {ask.questions ? (
-          <button className="rounded bg-amber-500 px-2 py-0.5 font-medium text-black">Answer…</button>
-        ) : (
-          <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => answer(true)} className="rounded bg-amber-500 px-2 py-0.5 font-medium text-black hover:bg-amber-400">
-              Allow
-            </button>
-            <button onClick={() => answer(false)} className="rounded bg-slate-800 px-2 py-0.5 hover:bg-slate-700">
-              Deny
-            </button>
-          </div>
-        )}
-        {t.asks.length > 1 && <div className="mt-1 text-slate-500">+{t.asks.length - 1} more</div>}
-      </div>
-    )
-  }
+  const theirs = huddleAsks(t)
+  const own = t.asks.filter((a) => !theirs.includes(a))
+  if (own[0]) return <AskBubble t={t} ask={own[0]} label={t.title} more={own.length - 1} onSelect={onSelect} />
   const pill = 'cursor-pointer whitespace-nowrap rounded-full px-2 text-[10px]'
   if (t.state === 'failed') return <div onClick={onSelect} className={`${pill} bg-red-600 font-bold text-white`}>failed</div>
   if (t.state === 'idle' && hover) return <div className={`${pill} bg-slate-800/90 text-slate-300`}>…your turn</div>
   if (t.state === 'working' && tag) return <div onClick={onSelect} className={`${pill} bg-sky-900/90 text-sky-200`}>{tag}</div>
   return null
+}
+
+// Re-renders every 250 ms while `on`, so lingering Subagents leave on time.
+function useNow(on: boolean) {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (!on) return
+    const i = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(i)
+  }, [on])
+  return on ? Date.now() : now
+}
+
+// A Thread's Subagents, beside its desk (spec: Subagents, variant A "Huddle").
+function Huddle(p: { t: Thread; L: RoomLayout; threads: Thread[]; gone: boolean; selected: boolean; local: (x: number, z: number) => readonly [number, number, number]; onSelect: (id: string) => void }) {
+  const { t } = p
+  const spot = spotFor(t, p.L, p.threads)
+  const lingering = t.subagents.some((s) => s.endedAt !== undefined && Date.now() - s.endedAt < FINISH_MS + SHRINK_MS)
+  const { shown, more } = huddle(t.subagents, useNow(lingering))
+  if (!spot.seated) return null
+  return (
+    <group position={v3(p.local(spot.x, spot.z))}>
+      {shown.map((h) => (
+        <SubCharacter key={h.sub.id} h={h} t={t} shrink={p.gone || h.shrink} selected={p.selected} onSelect={() => p.onSelect(t.id)} />
+      ))}
+      {more > 0 && !p.gone && (
+        <Html position={[0.9, 0.75, 0.1]} zIndexRange={p.selected ? [40, 31] : [20, 11]}>
+          <div onClick={() => p.onSelect(t.id)} className="-translate-x-1/2 cursor-pointer whitespace-nowrap rounded-full bg-violet-700 px-2 text-[10px] font-bold text-white">
+            +{more} subagent{more === 1 ? '' : 's'}
+          </div>
+        </Html>
+      )}
+    </group>
+  )
+}
+
+function SubCharacter({ h, t, shrink, selected, onSelect }: { h: HuddleSpot; t: Thread; shrink: boolean; selected: boolean; onSelect: () => void }) {
+  const { sub } = h
+  const gltf = useGLTF(CHARS[lookFor(sub.id, CHARS.length)])
+  const { root, scale, lift, mixer } = useMemo(() => {
+    const root = cloneSkinned(gltf.scene)
+    const box = new THREE.Box3().setFromObject(gltf.scene)
+    const scale = h.size / (box.max.y - box.min.y)
+    const mixer = new THREE.AnimationMixer(root)
+    const idle = THREE.AnimationClip.findByName(gltf.animations, 'idle')
+    if (idle) mixer.clipAction(idle).play()
+    return { root, scale, lift: -box.min.y * scale, mixer }
+  }, [gltf, h.size])
+  const holder = useRef<THREE.Group>(null)
+  const invalidate = useThree((s) => s.invalidate)
+  const [hover, setHover] = useState(false)
+  useEffect(() => invalidate(), [shrink, invalidate])
+
+  // Pops in on the spot, shrinks away on the spot.
+  useFrame((_, delta) => {
+    const g = holder.current
+    if (!g) return
+    const dt = Math.min(delta, 0.1)
+    const k = THREE.MathUtils.clamp(g.scale.x + (shrink ? -dt : dt) * (1000 / SHRINK_MS), 0.001, 1)
+    g.scale.setScalar(k)
+    mixer.update(dt)
+    if (sub.status === 'running' || (shrink ? k > 0.001 : k < 1)) wantFrame = true
+  })
+
+  const ask = t.asks.find((a) => a.agentID === sub.id)
+  const name = `${sub.depth > 1 ? '↳ ' : ''}${sub.type}`
+  const pill = 'max-w-[180px] cursor-pointer truncate whitespace-nowrap rounded-full px-2 text-[10px]'
+  return (
+    <group ref={holder} scale={0.001} position={[h.dx, 0, h.dz]} rotation-y={-0.5} onClick={(e) => (e.stopPropagation(), e.delta < 6 && onSelect())} onPointerOver={(e) => (e.stopPropagation(), setHover(true))} onPointerOut={() => setHover(false)}>
+      <primitive object={root} scale={scale} position-y={lift} />
+      {!shrink && (
+        <Html position={[0, h.size + 0.12, 0]} zIndexRange={selected || ask ? [40, 31] : [20, 11]}>
+          <div className="-translate-x-1/2 -translate-y-full" onClick={onSelect}>
+            {ask ? (
+              <AskBubble t={t} ask={ask} label={`${t.title} · its ${sub.type} Subagent`} more={0} onSelect={onSelect} />
+            ) : sub.status === 'completed' ? (
+              <div className={`${pill} bg-emerald-700 text-white`}>✓ {sub.summary || 'done'}</div>
+            ) : sub.status === 'failed' ? (
+              <div className={`${pill} bg-red-600 font-bold text-white`}>✕ failed</div>
+            ) : (
+              <div className={`${pill} bg-violet-950/90 text-violet-100 ring-1 ring-violet-500/60`}>
+                <b>{name}</b> · {sub.summary || sub.description}
+                {hover && ` · ${sub.tools} tools`}
+              </div>
+            )}
+          </div>
+        </Html>
+      )}
+    </group>
+  )
 }
