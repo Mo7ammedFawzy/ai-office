@@ -267,6 +267,14 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         </div>
         <div className="truncate text-xs text-slate-500">
           {t.room} · {t.branch} ← {t.base} · {t.model}
+          {t.ticket && (
+            <>
+              {' · '}
+              <a href={`/api/threads/${t.id}/ticket`} target="_blank" rel="noreferrer" title={t.ticket} className="text-sky-400 hover:underline">
+                Ticket
+              </a>
+            </>
+          )}
           <ChangesSummary changes={changes} />
           {t.costUsd !== undefined && ` · ${(t.tokens ?? 0).toLocaleString()} tokens · ~$${t.costUsd.toFixed(2)}`}
         </div>

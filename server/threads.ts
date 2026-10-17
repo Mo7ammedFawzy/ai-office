@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { run, type Run, type RunnerEvent, type SubEvent } from './agent-runner.ts'
 import { diff, prUrl } from './changes.ts'
@@ -323,6 +323,15 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     },
 
     entries: (id: string) => readEntries(get(id).id),
+
+    // The main checkout's copy: write-back lands there.
+    ticket(id: string) {
+      const t = get(id)
+      if (!t.ticket) throw new HttpError(404, 'This Thread has no Ticket')
+      const file = join(roomPath(t), t.ticket)
+      if (!existsSync(file)) throw new HttpError(404, 'The Ticket file is gone')
+      return readFileSync(file, 'utf8')
+    },
 
     async changes(id: string) {
       const t = get(id)

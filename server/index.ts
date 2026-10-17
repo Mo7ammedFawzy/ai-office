@@ -51,6 +51,7 @@ const routes: Route[] = [
   ['POST', /^\/api\/threads\/([^/]+)\/(interrupt|stop|done|retry|end|discard)$/, (m) => threads.act(m[1], m[2])],
   ['GET', /^\/api\/threads\/([^/]+)\/entries$/, (m) => threads.entries(m[1])],
   ['GET', /^\/api\/threads\/([^/]+)\/diff$/, (m) => threads.changes(m[1])],
+  ['GET', /^\/api\/threads\/([^/]+)\/ticket$/, (m) => threads.ticket(m[1])],
 ]
 
 async function api(req: IncomingMessage, res: ServerResponse) {
@@ -66,6 +67,7 @@ async function api(req: IncomingMessage, res: ServerResponse) {
     }
     const out = await handle([...m].map(decodeURIComponent), body)
     if (out === undefined) return res.writeHead(204).end()
+    if (typeof out === 'string') return res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end(out)
     return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out))
   }
   res.writeHead(404).end()
