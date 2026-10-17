@@ -434,7 +434,7 @@ function AskBubble({ t, ask, label, more, onSelect }: { t: Thread; ask: Ask; lab
 }
 
 function Bubble({ t, hover, onSelect }: { t: Thread; hover: boolean; onSelect: () => void }) {
-  const tag = useDebounced(t.state === 'working' ? activityTag(t.tool) : undefined, 800)
+  const tag = useDebounced(t.state === 'working' ? activityTag(t.tool) : undefined, 2000)
   const theirs = huddleAsks(t)
   const own = t.asks.filter((a) => !theirs.includes(a))
   if (own[0]) return <AskBubble t={t} ask={own[0]} label={t.title} more={own.length - 1} onSelect={onSelect} />
@@ -522,6 +522,8 @@ function SubCharacter({ h, t, shrink, selected, onSelect }: { h: HuddleSpot; t: 
               <div className={`${pill} bg-emerald-700 text-white`}>✓ {sub.summary || 'done'}</div>
             ) : sub.status === 'failed' ? (
               <div className={`${pill} bg-red-600 font-bold text-white`}>✕ failed</div>
+            ) : sub.status === 'stopped' ? (
+              <div className={`${pill} bg-slate-700 text-slate-200`}>✕ stopped</div>
             ) : (
               <div className={`${pill} bg-violet-950/90 text-violet-100 ring-1 ring-violet-500/60`}>
                 <b>{name}</b> · {sub.summary || sub.description}
