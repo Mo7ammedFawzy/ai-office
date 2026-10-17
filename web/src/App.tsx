@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Thread } from './office.ts'
+import { ChangesPanel, ChangesSummary, useChanges } from './Changes.tsx'
 
 const roomPath = (name: string, action: string) => `rooms/${encodeURIComponent(name)}/${action}`
 
@@ -179,6 +180,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
     end.current?.scrollIntoView() // returns a Promise in newer Chrome; never hand it to React
   }, [entries?.length])
 
+  const changes = useChanges(t.id, `${t.state}:${entries?.length}`)
   const act = (action: string) => post(`threads/${t.id}/${action}`)
   const running = RUNNING.includes(t.state)
   const actions: [string, string][] = t.ended
@@ -204,6 +206,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         </div>
         <div className="truncate text-xs text-slate-500">
           {t.room} · {t.branch} ← {t.base} · {t.model}
+          <ChangesSummary changes={changes} />
           {t.costUsd !== undefined && ` · ${(t.tokens ?? 0).toLocaleString()} tokens · ~$${t.costUsd.toFixed(2)}`}
         </div>
         <div className="flex gap-1">
@@ -229,6 +232,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         ))}
         <div ref={end} />
       </div>
+      <ChangesPanel changes={changes} />
       {canSend && (
         <div className="flex gap-2 border-t border-slate-800 p-3">
           <textarea
