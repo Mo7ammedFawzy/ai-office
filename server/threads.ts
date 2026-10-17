@@ -69,7 +69,15 @@ export function usageTracker(start: Usage) {
   }
 }
 
-const errorText = (e: any) => String(e?.stderr || e?.message || e).trim()
+// What an ended Thread writes to its Ticket (after `Thread "<title>" `).
+export function endNote(state: State, branchKept: boolean, pr?: string) {
+  const s = state[0].toUpperCase() + state.slice(1)
+  if (!branchKept) return `${s} before starting`
+  const n = pr?.match(/\/pull\/(\d+)/)?.[1]
+  return `${s}: branch kept${n ? `, PR #${n}` : ''}`
+}
+
+const errorText =(e: any) => String(e?.stderr || e?.message || e).trim()
 
 function defaultBase(checkout: string) {
   return (
@@ -199,7 +207,10 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
   function end(t: Thread, state: State) {
     closeRun(t)
     update(t, { state, ended: true, endedAt: Date.now(), desk: undefined })
-    comment(t, `${state[0].toUpperCase()}${state.slice(1)}: branch kept`)
+    if (t.ticket) {
+      const kept = !!tryGit(roomPath(t), 'rev-parse', '--verify', '--quiet', `refs/heads/${t.branch}`)
+      ;(kept ? prUrl(roomPath(t), t.branch) : Promise.resolve(undefined)).then((pr) => comment(t, endNote(state, kept, pr)))
+    }
     if (existsSync(t.worktree)) {
       const dirty = tryGit(t.worktree, 'status', '--porcelain')
       if (dirty !== '') log(t, 'system', 'Worktree kept: it has uncommitted changes.')

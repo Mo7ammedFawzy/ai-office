@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { State, Thread } from './office.ts'
-import { applySub, freeDesk, recover, slugify, stopSubs, toLaunch, usageTracker } from './threads.ts'
+import { applySub, endNote, freeDesk, recover, slugify, stopSubs, toLaunch, usageTracker } from './threads.ts'
 
 const th = (id: string, state: State, queuedAt = 0) => ({ id, state, queuedAt }) as Thread
 
@@ -47,6 +47,12 @@ test('usage adds up across runs whether or not a resumed session carries its ear
   const crashed = usageTracker(u(0.3, 300))
   assert.equal(crashed(u(0, 0)), undefined) // crash results carry zeroed usage
   assert.deepEqual(crashed(u(0.4, 400)), u(0.4, 400))
+})
+
+test('the Ticket end line names the final state, the kept branch and its PR', () => {
+  assert.equal(endNote('done', true, 'https://github.com/o/r/pull/12'), 'Done: branch kept, PR #12')
+  assert.equal(endNote('failed', true), 'Failed: branch kept') // no PR, or gh missing
+  assert.equal(endNote('stopped', false), 'Stopped before starting') // never got a branch: nothing kept
 })
 
 test('slugify makes short branch-safe slugs', () => {
