@@ -44,6 +44,7 @@ const routes: Route[] = [
   ['POST', /^\/api\/threads\/([^/]+)\/answer$/, (m, body) => threads.answer(m[1], body)],
   ['POST', /^\/api\/threads\/([^/]+)\/(interrupt|stop|done|retry|end|discard)$/, (m) => threads.act(m[1], m[2])],
   ['GET', /^\/api\/threads\/([^/]+)\/entries$/, (m) => threads.entries(m[1])],
+  ['GET', /^\/api\/threads\/([^/]+)\/diff$/, (m) => threads.changes(m[1])],
 ]
 
 async function api(req: IncomingMessage, res: ServerResponse) {

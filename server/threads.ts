@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { run, type Run, type RunnerEvent } from './agent-runner.ts'
+import { diff, prUrl } from './changes.ts'
 import { appendEntry, readEntries, removeEntries, save, type Entry, type Office, type State, type Thread } from './office.ts'
 
 export const RUNNING: State[] = ['starting', 'working', 'needs-you']
@@ -250,5 +251,16 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     },
 
     entries: (id: string) => readEntries(get(id).id),
+
+    async changes(id: string) {
+      const t = get(id)
+      const pr = prUrl(roomPath(t), t.branch)
+      try {
+        const d = existsSync(t.worktree) ? diff(t.worktree, t.base) : diff(roomPath(t), t.base, t.branch)
+        return { ...d, pr: await pr }
+      } catch (e) {
+        throw new HttpError(409, `No changes to show: ${errorText(e)}`) // e.g. queued, nothing created yet
+      }
+    },
   }
 }
