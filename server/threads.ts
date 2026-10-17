@@ -31,6 +31,20 @@ export function recover(threads: Thread[]): Thread[] {
   return hit
 }
 
+type Usage = { costUsd: number; tokens: number }
+
+// One per run: turns the SDK's per-query() running totals into the Thread's totals. A resumed session's first
+// result either already includes `start` (its transcript saved them) or counts from zero again; we tell by size.
+// ponytail: a reset run whose first turn alone costs more than everything before it is read as a carry (undercounts).
+export function usageTracker(start: Usage) {
+  let offset: Usage | undefined
+  return (latest: Usage): Usage | undefined => {
+    if (!latest.tokens) return // crash/startup-error results carry zeroed usage
+    offset ??= latest.costUsd >= start.costUsd ? { costUsd: 0, tokens: 0 } : start
+    return { costUsd: offset.costUsd + latest.costUsd, tokens: offset.tokens + latest.tokens }
+  }
+}
+
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const tryGit = (cwd: string, ...args: string[]) => {
@@ -101,16 +115,17 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       log(t, 'error', `Could not create the worktree: ${errorText(e)}`)
       return fail(t)
     }
+    const track = usageTracker({ costUsd: t.costUsd ?? 0, tokens: t.tokens ?? 0 })
     const r = run(
       { id: t.id, resume: t.hasSession, cwd: t.worktree, projectRoot: roomPath(t), model: t.model, apiKey: office.apiKey },
-      (e) => onEvent(t, e),
+      (e) => onEvent(t, e, track),
     )
     runs.set(t.id, r)
     for (const m of t.inbox) r.send(m)
     update(t, { inbox: [] })
   }
 
-  function onEvent(t: Thread, e: RunnerEvent) {
+  function onEvent(t: Thread, e: RunnerEvent, track: ReturnType<typeof usageTracker>) {
     if (e.kind === 'session' && !t.hasSession) update(t, { hasSession: true })
     else if (e.kind === 'state' && e.state === 'working' && t.state === 'starting') update(t, { state: 'working' })
     else if (e.kind === 'state' && e.state === 'idle' && t.state === 'working') {
@@ -127,7 +142,8 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     else if (e.kind === 'result') {
       if (interrupted.delete(t.id)) log(t, 'system', 'Interrupted.') // its error is only a diagnostic
       else if (e.error) log(t, 'error', e.error)
-      update(t, { costUsd: e.costUsd, tokens: e.tokens })
+      const usage = track(e)
+      if (usage) update(t, usage)
     } else if (e.kind === 'exit') {
       runs.delete(t.id)
       log(t, 'error', e.error ?? 'Claude Code stopped unexpectedly.')
