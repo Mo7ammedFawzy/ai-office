@@ -25,6 +25,8 @@ export type Thread = {
   costUsd?: number
   tokens?: number
   asks: Ask[] // Needs-you requests, oldest first; only live while the run is
+  desk?: number // seat in its Room from first start until it ends
+  tool?: string // latest tool call, "<name> <detail>", for the scene's activity tag
 }
 
 export type Question = { question: string; header: string; multiSelect: boolean; options: { label: string; description: string }[] }

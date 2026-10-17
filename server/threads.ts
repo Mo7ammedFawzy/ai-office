@@ -23,6 +23,14 @@ export function toLaunch(threads: Thread[], maxRunning: number): Thread[] {
   return threads.filter((t) => t.state === 'queued').sort((a, b) => a.queuedAt - b.queuedAt).slice(0, Math.max(0, free))
 }
 
+// The lowest desk in the Room that no live Thread holds.
+export function freeDesk(threads: Thread[], room: string) {
+  const used = new Set(threads.filter((t) => t.room === room && !t.ended).map((t) => t.desk))
+  let i = 0
+  while (used.has(i)) i++
+  return i
+}
+
 // After a restart no process is left, so whatever was running waits for the user.
 export function recover(threads: Thread[]): Thread[] {
   const hit = threads.filter((t) => RUNNING.includes(t.state))
@@ -89,7 +97,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
   }
 
   function launch(t: Thread) {
-    update(t, { state: 'starting' })
+    update(t, { state: 'starting', desk: t.desk ?? freeDesk(office.threads, t.room) })
     try {
       if (!existsSync(t.worktree)) {
         const hasBranch = tryGit(roomPath(t), 'rev-parse', '--verify', '--quiet', `refs/heads/${t.branch}`)
@@ -118,7 +126,11 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       update(t, { state: 'idle' })
       schedule()
     } else if (e.kind === 'text') log(t, 'text', e.text)
-    else if (e.kind === 'tool') log(t, 'tool', `${e.name} ${e.detail}`.trim())
+    else if (e.kind === 'tool') {
+      t.tool = `${e.name} ${e.detail}`.trim()
+      log(t, 'tool', t.tool)
+      emit({ type: 'thread', thread: t }) // not saved: it only feeds the scene's activity tag
+    }
     else if (e.kind === 'ask') {
       log(t, 'system', `Needs you: ${e.ask.title}`)
       update(t, { asks: [...t.asks, e.ask], state: 'needs-you' })
@@ -143,7 +155,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
   // Ending keeps the branch; the worktree goes only when nothing would be lost.
   function end(t: Thread, state: State) {
     closeRun(t)
-    update(t, { state, ended: true })
+    update(t, { state, ended: true, desk: undefined })
     if (existsSync(t.worktree)) {
       const dirty = tryGit(t.worktree, 'status', '--porcelain')
       if (dirty !== '') log(t, 'system', 'Worktree kept: it has uncommitted changes.')
@@ -167,6 +179,7 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
 
   // Boot: nothing survived the restart.
   for (const t of recover(office.threads)) log(t, 'system', 'Office restarted during this turn. Reply to continue.')
+  for (const t of office.threads) if (!t.ended && t.state !== 'queued') t.desk ??= freeDesk(office.threads, t.room) // records from before desks
   save(office)
   schedule()
 
