@@ -1,5 +1,5 @@
 // Pure Campus logic: where Rooms, desks and Characters go. No three.js here so tsx tests can import it.
-import type { Thread } from '../../server/office.ts'
+import type { Ask, Subagent, Thread } from '../../server/office.ts'
 
 export const COLS = 3 // a Room is 3 desks wide
 const GAP_X = 7
@@ -64,3 +64,34 @@ const TAGS:[RegExp, string][] = [
 
 // Working's activity tag from the latest tool call ("<name> <detail>").
 export const activityTag = (tool?: string) => (tool ? TAGS.find(([re]) => re.test(tool))?.[1] : undefined)
+
+// The Subagent that raised an ask (the SDK's agentID is its task_id), or undefined for the Thread's own.
+export const askerOf = (t: Thread, ask: Ask) => (ask.agentID ? t.subagents?.find((s) => s.id === ask.agentID) : undefined)
+
+export const FINISH_MS = 4000 // a finished Subagent shows ✓/✕ this long
+export const SHRINK_MS = 400
+const MAX_SHOWN = 3
+
+export type HuddleSpot = { sub: Subagent; dx: number; dz: number; size: number; shrink: boolean }
+
+// Subagents beside the parent's desk: offsets from the parent's spot, up to 3, then "+N". Nested ones stand
+// behind their spawner. A finished one lingers FINISH_MS (a stopped one doesn't), then shrinks for SHRINK_MS.
+export function huddle(subs: Subagent[], now: number): { shown: HuddleSpot[]; more: number } {
+  const linger = (s: Subagent) => (s.status === 'stopped' ? 0 : FINISH_MS)
+  const floor = subs.filter((s) => s.endedAt === undefined || now - s.endedAt < linger(s) + SHRINK_MS)
+  const ids = new Set(floor.map((s) => s.id))
+  const shown: HuddleSpot[] = []
+  let row = 0
+  for (const s of floor) {
+    if (shown.length === MAX_SHOWN) break
+    const size = s.depth > 1 ? 0.32 : 0.42
+    const shrink = s.endedAt !== undefined && now - s.endedAt >= linger(s)
+    if (s.parent && ids.has(s.parent)) {
+      const p = shown.find((h) => h.sub.id === s.parent)
+      if (!p) continue // its spawner has no room: it counts in +N
+      const k = shown.filter((h) => h.sub.parent === s.parent).length
+      shown.push({ sub: s, dx: p.dx + 0.12 * k, dz: p.dz - 0.35, size, shrink })
+    } else shown.push({ sub: s, dx: 0.55 + 0.32 * row++, dz: 0.1, size, shrink })
+  }
+  return { shown, more: floor.length - shown.length }
+}

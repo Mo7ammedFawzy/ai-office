@@ -1,7 +1,49 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Thread } from '../../server/office.ts'
-import { activityTag, layoutCampus, lookFor, spotFor } from './campus.ts'
+import type { Ask, Subagent, Thread } from '../../server/office.ts'
+import { activityTag, askerOf, huddle, layoutCampus, lookFor, spotFor } from './campus.ts'
+
+const sub = (id: string, more: Partial<Subagent> = {}) => ({ id, type: 'Explore', description: '', depth: 1, status: 'running', tools: 0, startedAt: 0, ...more }) as Subagent
+
+test('an ask carrying a Subagent agentID is attributed to that Subagent', () => {
+  const t = { subagents: [sub('a'), sub('b', { type: 'Plan' })] } as Thread
+  const ask = (agentID?: string) => ({ id: 'x', agentID }) as Ask
+  assert.equal(askerOf(t, ask('b'))?.type, 'Plan')
+  assert.equal(askerOf(t, ask()), undefined) // the Thread's own ask
+  assert.equal(askerOf(t, ask('gone')), undefined)
+})
+
+test('huddle shows up to 3 Subagents beside the desk, then counts the rest', () => {
+  const h = huddle(['a', 'b', 'c', 'd', 'e'].map((id) => sub(id)), 0)
+  assert.deepEqual(h.shown.map((s) => s.sub.id), ['a', 'b', 'c'])
+  assert.equal(h.more, 2)
+  const xs = h.shown.map((s) => s.dx)
+  assert.ok(xs[0] > 0 && xs[0] < xs[1] && xs[1] < xs[2]) // a row to the right of the desk
+  assert.equal(new Set(h.shown.map((s) => s.dz)).size, 1)
+})
+
+test('a nested Subagent stands smaller, behind the one that spawned it', () => {
+  const h = huddle([sub('a'), sub('b'), sub('n', { depth: 2, parent: 'b' })], 0)
+  const [, b, n] = h.shown
+  assert.equal(n.sub.id, 'n')
+  assert.ok(Math.abs(n.dx - b.dx) < 0.2) // with its spawner
+  assert.ok(n.dz < b.dz) // behind
+  assert.ok(n.size < b.size)
+  assert.deepEqual(huddle([sub('n', { depth: 2, parent: 'x' })], 0).shown.length, 1) // unknown parent: still shown
+  const hidden = huddle([sub('a'), sub('b'), sub('c'), sub('n', { depth: 2, parent: 'a' })], 0)
+  assert.equal(hidden.more, 1) // no room left: it counts in +N
+})
+
+test('a finished Subagent lingers with its result, then shrinks away; a stopped one shrinks at once', () => {
+  const done = sub('a', { status: 'completed', endedAt: 1000 })
+  const stopped = sub('s', { status: 'stopped', endedAt: 1000 })
+  const at = (now: number) => huddle([done, stopped], now).shown.map((s) => `${s.sub.id}:${s.shrink}`)
+  assert.deepEqual(at(1000), ['a:false', 's:true'])
+  assert.deepEqual(at(4900), ['a:false'])
+  assert.deepEqual(at(5100), ['a:true'])
+  assert.deepEqual(at(6000), [])
+  assert.equal(huddle([done], 6000).more, 0) // gone ones don't count
+})
 
 const th = (room: string, desk?: number, ended = false) => ({ id: room + desk, room, desk, ended }) as Thread
 
