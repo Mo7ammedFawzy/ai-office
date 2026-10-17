@@ -60,6 +60,8 @@ test('a Room starts with 3 desks, grows a row of 3 when full, and shrinks back',
   assert.equal(desks([th('a', 0), th('a', 1), th('a', 2)]), 3)
   assert.equal(desks([th('a', 0), th('a', 3)]), 6)
   assert.equal(desks([th('a', 0), th('a', 3, true)]), 3) // the far desk freed
+  assert.equal(desks([th('a', 3)]), 6) // a Character keeps its desk: its row stays until it leaves
+  assert.equal(desks([th('a', 0), th('a', 1), th('a', 2), th('a', 4)]), 6) // the next Thread fills desk 3, no new row
   assert.equal(desks([th('b', 7)]), 3) // other Rooms' desks don't count
 })
 

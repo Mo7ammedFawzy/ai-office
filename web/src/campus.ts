@@ -22,6 +22,8 @@ export function layoutCampus(rooms: string[], threads: Thread[]): RoomLayout[] {
   let oz = 0
   for (let i = 0; i < names.length; i += per) {
     const row = names.slice(i, i + per).map((name, j) => {
+      // Deep enough for the farthest held desk: Characters never move, and new Threads fill the lowest free desk,
+      // so the Room shrinks as soon as its back rows empty.
       const need = Math.max(COLS, ...threads.filter((t) => t.room === name && !t.ended && t.desk !== undefined).map((t) => t.desk! + 1))
       const rows = Math.ceil(need / COLS)
       const seats: [number, number][] = []
