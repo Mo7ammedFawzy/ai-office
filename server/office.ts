@@ -22,8 +22,10 @@ export type Thread = {
   inbox: string[] // messages waiting for the next launch
   createdAt: number
   queuedAt: number
+  endedAt?: number
   costUsd?: number
   tokens?: number
+  ticket?: string // `.scratch/<feature>/issues/*.md` path in the Room's main checkout
   asks: Ask[] // Needs-you requests, oldest first; only live while the run is
   desk?: number // seat in its Room from first start until it ends
   tool?: string // latest tool call, "<name> <detail>", for the scene's activity tag

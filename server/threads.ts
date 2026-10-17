@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { run, type Run, type RunnerEvent } from './agent-runner.ts'
+import { diff, prUrl } from './changes.ts'
 import { appendEntry, readEntries, removeEntries, save, type Entry, type Office, type State, type Thread } from './office.ts'
+import { appendComment, listTickets, ticketPrompt } from './tickets.ts'
 
 export const RUNNING: State[] = ['starting', 'working', 'needs-you']
 export const MODELS = ['sonnet', 'opus', 'haiku']
@@ -36,6 +38,20 @@ export function recover(threads: Thread[]): Thread[] {
   const hit = threads.filter((t) => RUNNING.includes(t.state))
   for (const t of hit) Object.assign(t, { state: 'idle', asks: [] })
   return hit
+}
+
+type Usage = { costUsd: number; tokens: number }
+
+// One per run: turns the SDK's per-query() running totals into the Thread's totals. A resumed session's first
+// result either already includes `start` (its transcript saved them) or counts from zero again; we tell by size.
+// ponytail: a reset run whose first turn alone costs more than everything before it is read as a carry (undercounts).
+export function usageTracker(start: Usage) {
+  let offset: Usage | undefined
+  return (latest: Usage): Usage | undefined => {
+    if (!latest.tokens) return // crash/startup-error results carry zeroed usage
+    offset ??= latest.costUsd >= start.costUsd ? { costUsd: 0, tokens: 0 } : start
+    return { costUsd: offset.costUsd + latest.costUsd, tokens: offset.tokens + latest.tokens }
+  }
 }
 
 const git = (cwd: string, ...args: string[]) =>
@@ -108,16 +124,17 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
       log(t, 'error', `Could not create the worktree: ${errorText(e)}`)
       return fail(t)
     }
+    const track = usageTracker({ costUsd: t.costUsd ?? 0, tokens: t.tokens ?? 0 })
     const r = run(
       { id: t.id, resume: t.hasSession, cwd: t.worktree, projectRoot: roomPath(t), model: t.model, apiKey: office.apiKey },
-      (e) => onEvent(t, e),
+      (e) => onEvent(t, e, track),
     )
     runs.set(t.id, r)
     for (const m of t.inbox) r.send(m)
     update(t, { inbox: [] })
   }
 
-  function onEvent(t: Thread, e: RunnerEvent) {
+  function onEvent(t: Thread, e: RunnerEvent, track: ReturnType<typeof usageTracker>) {
     if (e.kind === 'session' && !t.hasSession) update(t, { hasSession: true })
     else if (e.kind === 'state' && e.state === 'working' && t.state === 'starting') update(t, { state: 'working' })
     else if (e.kind === 'state' && e.state === 'idle' && t.state === 'working') {
@@ -138,7 +155,8 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     else if (e.kind === 'result') {
       if (interrupted.delete(t.id)) log(t, 'system', 'Interrupted.') // its error is only a diagnostic
       else if (e.error) log(t, 'error', e.error)
-      update(t, { costUsd: e.costUsd, tokens: e.tokens })
+      const usage = track(e)
+      if (usage) update(t, usage)
     } else if (e.kind === 'exit') {
       runs.delete(t.id)
       log(t, 'error', e.error ?? 'Claude Code stopped unexpectedly.')
@@ -152,10 +170,21 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     schedule()
   }
 
+  // Write-back goes to the main checkout's copy only, so a Thread's branch never carries tracker edits.
+  function comment(t: Thread, text: string) {
+    if (!t.ticket) return
+    try {
+      appendComment(join(roomPath(t), t.ticket), `Thread "${t.title}" ${text}`)
+    } catch (e) {
+      log(t, 'system', `Could not write to the Ticket: ${errorText(e)}`)
+    }
+  }
+
   // Ending keeps the branch; the worktree goes only when nothing would be lost.
   function end(t: Thread, state: State) {
     closeRun(t)
-    update(t, { state, ended: true, desk: undefined })
+    update(t, { state, ended: true, endedAt: Date.now(), desk: undefined })
+    comment(t, `${state[0].toUpperCase()}${state.slice(1)}: branch kept`)
     if (existsSync(t.worktree)) {
       const dirty = tryGit(t.worktree, 'status', '--porcelain')
       if (dirty !== '') log(t, 'system', 'Worktree kept: it has uncommitted changes.')
@@ -184,25 +213,30 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
   schedule()
 
   return {
-    start(body: { room?: string; prompt?: string; base?: string; model?: string }) {
-      const prompt = body.prompt?.trim()
+    start(body: { room?: string; prompt?: string; base?: string; model?: string; ticket?: string }) {
       const model = body.model || 'sonnet'
       if (!body.room || !rooms().includes(body.room)) throw new HttpError(400, 'Unknown Project')
-      if (!prompt) throw new HttpError(400, 'Prompt is empty')
       if (!MODELS.includes(model)) throw new HttpError(400, 'Unknown model')
+      const repo = join(office.projectsRoot, body.room)
+      const base = body.base?.trim() || defaultBase(repo)
+      // Only listed Tickets: the path names a file we read and write.
+      const ticket = body.ticket ? listTickets(repo).find((x) => x.path === body.ticket) : undefined
+      if (body.ticket && !ticket) throw new HttpError(400, 'No such Ticket')
+      const prompt = ticket ? ticketPrompt(repo, ticket.path, base, body.prompt ?? '') : body.prompt?.trim()
+      if (!prompt) throw new HttpError(400, 'Prompt is empty')
       const id = randomUUID()
-      const title = prompt.split('\n')[0].slice(0, 60)
+      const title = (ticket?.title ?? prompt.split('\n')[0]).slice(0, 60)
       const slug = `${slugify(title)}-${id.slice(0, 4)}`
       const now = Date.now()
       const t: Thread = {
-        id, room: body.room, title, model,
-        base: body.base?.trim() || defaultBase(join(office.projectsRoot, body.room)),
+        id, room: body.room, title, model, base,
         branch: `office/${slug}`,
         worktree: join(office.projectsRoot, '.worktrees', body.room, slug),
         state: 'queued', ended: false, hasSession: false, inbox: [], asks: [],
-        createdAt: now, queuedAt: now,
+        createdAt: now, queuedAt: now, ticket: ticket?.path,
       }
       office.threads.push(t)
+      comment(t, `started on ${t.branch} from ${base} (${new Date().toLocaleDateString('en-CA')})`)
       log(t, 'user', prompt)
       queue(t, prompt)
       return { id }
@@ -263,5 +297,16 @@ export function createThreads(office: Office, rooms: () => string[], emit: (msg:
     },
 
     entries: (id: string) => readEntries(get(id).id),
+
+    async changes(id: string) {
+      const t = get(id)
+      const pr = prUrl(roomPath(t), t.branch)
+      try {
+        const d = existsSync(t.worktree) ? diff(t.worktree, t.base) : diff(roomPath(t), t.base, t.branch)
+        return { ...d, pr: await pr }
+      } catch (e) {
+        throw new HttpError(409, `No changes to show: ${errorText(e)}`) // e.g. queued, nothing created yet
+      }
+    },
   }
 }

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Campus } from './Campus.tsx'
+import { endedNewestFirst } from '../../server/activity.ts'
 import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Thread } from './office.ts'
+import type { Ticket } from '../../server/tickets.ts'
+import { ChangesPanel, ChangesSummary, useChanges } from './Changes.tsx'
 
 const roomPath = (name: string, action: string) => `rooms/${encodeURIComponent(name)}/${action}`
 
@@ -28,6 +31,8 @@ export function App() {
   const needy = threads.filter((t) => t.asks.length > 0).sort((a, b) => a.asks[0].at - b.asks[0].at)
   const waiting = needy.flatMap((t) => t.asks.map((a) => ({ t, a })))
   const seen = useRef<Set<string>>(undefined)
+  const byId = new Map(threads.map((t) => [t.id, t]))
+  const ended = endedNewestFirst(threads)
 
   useEffect(() => {
     document.title = waiting.length ? `(${waiting.length}) AI Office` : 'AI Office'
@@ -47,7 +52,7 @@ export function App() {
     <div className="flex h-screen text-sm">
       <aside className="flex w-72 shrink-0 flex-col gap-4 overflow-auto border-r border-slate-800 p-3">
         <h1 className="font-semibold">AI Office</h1>
-        <NewThread rooms={visible} canStart={threads.filter((t) => RUNNING.includes(t.state)).length < office.maxRunning} onStarted={setSelected} />
+        <NewThread rooms={visible} threads={threads} canStart={threads.filter((t) => RUNNING.includes(t.state)).length < office.maxRunning} onStarted={setSelected} />
         <section>
           <h2 className="mb-1 text-xs uppercase tracking-wide text-slate-500">Needs you</h2>
           {needy.length === 0 && <p className="text-slate-600">Nothing waiting.</p>}
@@ -65,7 +70,32 @@ export function App() {
         </section>
         <section>
           <h2 className="mb-1 text-xs uppercase tracking-wide text-slate-500">Activity</h2>
+          {office.activity.length === 0 && <p className="text-slate-600">Nothing yet.</p>}
+          <div className="flex flex-col">
+            {office.activity.map(({ id, entry }, i) => (
+              <button key={i} onClick={() => setSelected(id)} className="rounded px-1 py-0.5 text-left hover:bg-slate-800">
+                <span className="block truncate text-xs text-slate-500">
+                  {byId.get(id)?.room} · {byId.get(id)?.title} · {new Date(entry.at).toLocaleTimeString()}
+                </span>
+                <span className={`block truncate ${entry.kind === 'error' ? 'text-red-400' : 'text-slate-300'}`}>{entry.text}</span>
+              </button>
+            ))}
+          </div>
         </section>
+        <details>
+          <summary className="cursor-pointer text-xs uppercase tracking-wide text-slate-500">Ended ({ended.length})</summary>
+          <div className="mt-1 flex flex-col">
+            {ended.map((t) => (
+              <button key={t.id} onClick={() => setSelected(t.id)} className={`flex items-center gap-2 rounded px-1 py-1 text-left hover:bg-slate-800 ${t.id === selected ? 'bg-slate-800' : ''}`}>
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="text-slate-500">{t.room} · </span>
+                  {t.title}
+                </span>
+                <StateChip state={t.state} />
+              </button>
+            ))}
+          </div>
+        </details>
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -108,25 +138,69 @@ export function App() {
   )
 }
 
-function NewThread({ rooms, canStart, onStarted }: { rooms: Room[]; canStart: boolean; onStarted: (id: string) => void }) {
+function NewThread({ rooms, threads, canStart, onStarted }: { rooms: Room[]; threads: Thread[]; canStart: boolean; onStarted: (id: string) => void }) {
   const [prompt, setPrompt] = useState('')
   const [room, setRoom] = useState('')
   const [base, setBase] = useState('')
   const [model, setModel] = useState('sonnet')
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [ticket, setTicket] = useState('')
+  const [showAll, setShowAll] = useState(false)
   const target = room || rooms[0]?.name
+  const picked = tickets.find((x) => x.path === ticket)
+  const live = picked && threads.find((t) => t.room === target && t.ticket === picked.path && !t.ended)
+  const offered = tickets.filter((x) => showAll || x.status === 'ready-for-agent' || x.path === ticket)
+  const features = [...new Set(offered.map((x) => x.feature))]
+
+  async function loadTickets() {
+    if (!target) return
+    const res = await fetch(`/api/${roomPath(target, 'tickets')}`)
+    setTickets(res.ok ? await res.json() : [])
+  }
+  useEffect(() => {
+    setTicket('')
+    loadTickets()
+  }, [target])
 
   async function start() {
     if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission() // needs a click
-    const res = await post('threads', { room: target, prompt, base, model })
+    const res = await post('threads', { room: target, prompt, base, model, ticket: ticket || undefined })
     if (res.ok) {
       setPrompt('')
+      setTicket('')
+      loadTickets()
       onStarted((await res.json()).id)
     }
   }
 
   return (
     <section className="flex flex-col gap-2 rounded border border-slate-800 p-2">
-      <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder="What should Claude do?" className="resize-y rounded bg-slate-900 p-2 outline-none focus:ring-1 focus:ring-sky-600" />
+      {tickets.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <select value={ticket} onChange={(e) => setTicket(e.target.value)} className="min-w-0 flex-1 rounded bg-slate-900 p-1" aria-label="From Ticket">
+              <option value="">From Ticket…</option>
+              {features.map((f) => (
+                <optgroup key={f} label={f}>
+                  {offered.filter((x) => x.feature === f).map((x) => (
+                    <option key={x.path} value={x.path}>
+                      {x.title}
+                      {x.status !== 'ready-for-agent' ? ` (${x.status ?? 'no status'})` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <label className="flex items-center gap-1 text-xs text-slate-400">
+              <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+              show all
+            </label>
+          </div>
+          {picked?.blockedBy && <div className="text-xs text-slate-400">Blocked by: {picked.blockedBy}</div>}
+          {live && <div className="text-xs text-amber-400">Already on a desk: {live.title}</div>}
+        </div>
+      )}
+      <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder={ticket ? 'Anything to add? (optional)' : 'What should Claude do?'} className="resize-y rounded bg-slate-900 p-2 outline-none focus:ring-1 focus:ring-sky-600" />
       <div className="grid grid-cols-2 gap-2">
         <select value={target} onChange={(e) => setRoom(e.target.value)} className="rounded bg-slate-900 p-1" aria-label="Project">
           {rooms.map((r) => (
@@ -140,7 +214,7 @@ function NewThread({ rooms, canStart, onStarted }: { rooms: Room[]; canStart: bo
         </select>
       </div>
       <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="Base branch (default branch)" className="rounded bg-slate-900 p-1" />
-      <button disabled={!prompt.trim() || !target} onClick={start} className="rounded bg-sky-700 py-1 font-medium hover:bg-sky-600 disabled:opacity-40">
+      <button disabled={!(prompt.trim() || ticket) || !target} onClick={start} className="rounded bg-sky-700 py-1 font-medium hover:bg-sky-600 disabled:opacity-40">
         Start · {canStart ? 'starts now' : 'will queue'}
       </button>
     </section>
@@ -165,6 +239,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
     end.current?.scrollIntoView() // returns a Promise in newer Chrome; never hand it to React
   }, [entries?.length])
 
+  const changes = useChanges(t.id, `${t.state}:${entries?.length}`)
   const act = (action: string) => post(`threads/${t.id}/${action}`)
   const running = RUNNING.includes(t.state)
   const actions: [string, string][] = t.ended
@@ -190,6 +265,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         </div>
         <div className="truncate text-xs text-slate-500">
           {t.room} · {t.branch} ← {t.base} · {t.model}
+          <ChangesSummary changes={changes} />
           {t.costUsd !== undefined && ` · ${(t.tokens ?? 0).toLocaleString()} tokens · ~$${t.costUsd.toFixed(2)}`}
         </div>
         <div className="flex gap-1">
@@ -215,6 +291,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         ))}
         <div ref={end} />
       </div>
+      <ChangesPanel changes={changes} />
       {canSend && (
         <div className="flex gap-2 border-t border-slate-800 p-3">
           <textarea
