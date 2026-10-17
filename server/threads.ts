@@ -59,6 +59,7 @@ type Usage = { costUsd: number; tokens: number }
 
 // One per run: turns the SDK's per-query() running totals into the Thread's totals. A resumed session's first
 // result either already includes `start` (its transcript saved them) or counts from zero again; we tell by size.
+// (SDK result docs: cumulative per query(); a resume continues the transcript's saved total "when it has one".)
 // ponytail: a reset run whose first turn alone costs more than everything before it is read as a carry (undercounts).
 export function usageTracker(start: Usage) {
   let offset: Usage | undefined
