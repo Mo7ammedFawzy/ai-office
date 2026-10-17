@@ -7,7 +7,7 @@ Decisions marked _(agent-decided)_ were made by Claude after the user delegated 
 ## Stack and layout
 
 - One npm package at the repo root. `server/` is Node + TypeScript run with `tsx`; `web/` is React + Vite, React Three Fiber + drei for the scene, Tailwind + shadcn-style components for panels.
-- `npm run dev` starts both (Vite proxies `/api` and `/ws` to the server on port 4310). `npm start` builds `web/` and serves it from the server at `http://localhost:4310`.
+- One port, `http://127.0.0.1:4310`. `npm run dev` runs the server with Vite as middleware (HMR included); `npm start` builds `web/` and the server serves `web/dist`. API and `/ws` refuse requests whose `Origin` is another site.
 - Transport _(agent-decided)_: REST for commands (`POST /api/...`), one WebSocket `/ws` for live state. On connect the server sends a full snapshot; afterwards it sends `thread` (whole Thread record, minus transcript), `entry` (one transcript entry appended to a Thread) and `rooms` messages.
 - Office data _(agent-decided)_: `%USERPROFILE%\.ai-office\office.json` (Thread records, hidden Rooms, config) and `%USERPROFILE%\.ai-office\threads\<id>.jsonl` (each Thread's transcript entries, appended). Written on every change. No database.
 - Config in `office.json`: `maxRunning` (default 6), `apiKey` (optional, see [ADR 0001](adr/0001-subscription-login-for-personal-use.md)), `projectsRoot` (default `C:\Projects\personal`).
