@@ -41,6 +41,7 @@ const routes: Route[] = [
   ['POST', /^\/api\/rooms\/([^/]+)\/(hide|show)$/, (m) => setHidden(m[1], m[2] === 'hide')],
   ['POST', /^\/api\/threads$/, (_, body) => threads.start(body)],
   ['POST', /^\/api\/threads\/([^/]+)\/send$/, (m, body) => threads.send(m[1], body.text)],
+  ['POST', /^\/api\/threads\/([^/]+)\/answer$/, (m, body) => threads.answer(m[1], body)],
   ['POST', /^\/api\/threads\/([^/]+)\/(interrupt|stop|done|retry|end|discard)$/, (m) => threads.act(m[1], m[2])],
   ['GET', /^\/api\/threads\/([^/]+)\/entries$/, (m) => threads.entries(m[1])],
 ]

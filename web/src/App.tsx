@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { post, RUNNING, useOffice, type Entry, type Room, type State, type Thread } from './office.ts'
+import { post, RUNNING, useOffice, type Ask, type Entry, type Room, type State, type Thread } from './office.ts'
 
 const roomPath = (name: string, action: string) => `rooms/${encodeURIComponent(name)}/${action}`
 
@@ -24,6 +24,23 @@ export function App() {
   const visible = rooms.filter((r) => !r.hidden)
   const hidden = rooms.filter((r) => r.hidden)
   const thread = threads.find((t) => t.id === selected)
+  const needy = threads.filter((t) => t.asks.length > 0).sort((a, b) => a.asks[0].at - b.asks[0].at)
+  const waiting = needy.flatMap((t) => t.asks.map((a) => ({ t, a })))
+  const seen = useRef<Set<string>>(undefined)
+
+  useEffect(() => {
+    document.title = waiting.length ? `(${waiting.length}) AI Office` : 'AI Office'
+  }, [waiting.length])
+
+  // Notify only for asks that arrive while the tab is hidden, never for the snapshot's.
+  useEffect(() => {
+    if (!connected) return void (seen.current = undefined)
+    if (seen.current && document.hidden && 'Notification' in window && Notification.permission === 'granted')
+      for (const { t, a } of waiting)
+        if (!seen.current.has(a.id))
+          new Notification(`${t.room} needs you`, { body: a.title, tag: a.id }).onclick = () => (window.focus(), setSelected(t.id))
+    seen.current = new Set(waiting.map(({ a }) => a.id))
+  })
 
   return (
     <div className="flex h-screen text-sm">
@@ -32,7 +49,18 @@ export function App() {
         <NewThread rooms={visible} canStart={threads.filter((t) => RUNNING.includes(t.state)).length < office.maxRunning} onStarted={setSelected} />
         <section>
           <h2 className="mb-1 text-xs uppercase tracking-wide text-slate-500">Needs you</h2>
-          <p className="text-slate-600">Nothing waiting.</p>
+          {needy.length === 0 && <p className="text-slate-600">Nothing waiting.</p>}
+          <div className="flex flex-col gap-2">
+            {needy.map((t) => (
+              <div key={t.id} className="rounded border border-amber-500/40 bg-amber-500/5 p-2">
+                <button onClick={() => setSelected(t.id)} className="mb-1 block w-full truncate text-left text-xs text-slate-400 hover:text-slate-200">
+                  {t.room} · {t.title}
+                </button>
+                <AskCard key={t.asks[0].id} t={t} ask={t.asks[0]} />
+                {t.asks.length > 1 && <div className="mt-1 text-xs text-slate-500">+{t.asks.length - 1} more</div>}
+              </div>
+            ))}
+          </div>
         </section>
         <section>
           <h2 className="mb-1 text-xs uppercase tracking-wide text-slate-500">Activity</h2>
@@ -44,6 +72,7 @@ export function App() {
           {visible.map((r) => (
             <span key={r.name} className="flex items-center gap-1 rounded bg-slate-800 px-2 py-1">
               {r.name}
+              {needy.some((t) => t.room === r.name) && <span className="rounded bg-amber-500 px-1 text-xs text-black">{needy.filter((t) => t.room === r.name).length}</span>}
               <button title="Hide Room" className="text-slate-500 hover:text-slate-200" onClick={() => post(roomPath(r.name, 'hide'))}>
                 ✕
               </button>
@@ -101,6 +130,7 @@ function NewThread({ rooms, canStart, onStarted }: { rooms: Room[]; canStart: bo
   const target = room || rooms[0]?.name
 
   async function start() {
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission() // needs a click
     const res = await post('threads', { room: target, prompt, base, model })
     if (res.ok) {
       setPrompt('')
@@ -156,7 +186,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
     : t.state === 'failed'
       ? [['retry', 'Retry'], ['end', 'End']]
       : [...(running ? [['interrupt', 'Interrupt']] : []), ...(t.state === 'idle' ? [['done', 'Mark done']] : []), ['stop', 'Stop']] as [string, string][]
-  const canSend = !t.ended && ['queued', 'starting', 'working', 'idle'].includes(t.state)
+  const canSend = !t.ended && ['queued', 'starting', 'working', 'needs-you', 'idle'].includes(t.state)
 
   async function send() {
     if ((await post(`threads/${t.id}/send`, { text })).ok) setText('')
@@ -184,6 +214,13 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
           ))}
         </div>
       </header>
+      {t.asks.length > 0 && (
+        <div className="flex flex-col gap-3 border-b border-amber-500/40 bg-amber-500/5 p-3">
+          {t.asks.map((a) => (
+            <AskCard key={a.id} t={t} ask={a} />
+          ))}
+        </div>
+      )}
       <div className="flex flex-1 flex-col gap-2 overflow-auto p-3">
         {entries?.map((e, i) => (
           <div key={i} className={`whitespace-pre-wrap break-words ${ENTRY_STYLE[e.kind]}`}>
@@ -199,7 +236,7 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), text.trim() && send())}
             rows={2}
-            placeholder={running ? 'Steer…' : t.state === 'queued' ? 'Add to the first message…' : 'Reply…'}
+            placeholder={t.asks.length > 0 ? 'Deny with a note…' : running ? 'Steer…' : t.state === 'queued' ? 'Add to the first message…' : 'Reply…'}
             className="flex-1 resize-none rounded bg-slate-900 p-2 outline-none focus:ring-1 focus:ring-sky-600"
           />
           <button disabled={!text.trim()} onClick={send} className="rounded bg-sky-700 px-3 hover:bg-sky-600 disabled:opacity-40">
@@ -208,5 +245,58 @@ function Drawer({ thread: t, entries, load, connected, onClose }: { thread: Thre
         </div>
       )}
     </aside>
+  )
+}
+
+// One waiting request: Allow/Deny, or option buttons for AskUserQuestion.
+function AskCard({ t, ask }: { t: Thread; ask: Ask }) {
+  const [picked, setPicked] = useState<Record<string, string[]>>({})
+  const answer = (body: object) => post(`threads/${t.id}/answer`, { ask: ask.id, ...body })
+  const btn = 'rounded px-2 py-1 text-left'
+
+  if (!ask.questions)
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="break-words">{ask.title}</div>
+        {ask.detail && !ask.title.includes(ask.detail) && <div className="break-words font-mono text-xs text-slate-400">{ask.detail}</div>}
+        <div className="flex gap-1">
+          <button onClick={() => answer({ allow: true })} className={`${btn} bg-emerald-700 hover:bg-emerald-600`}>Allow</button>
+          <button onClick={() => answer({ allow: false })} className={`${btn} bg-slate-700 hover:bg-slate-600`}>Deny</button>
+        </div>
+      </div>
+    )
+
+  const qs = ask.questions
+  const instant = qs.length === 1 && !qs[0].multiSelect // one click answers
+  const submit = (p: Record<string, string[]>) => answer({ allow: true, answers: Object.fromEntries(qs.map((q) => [q.question, p[q.question].join(', ')])) })
+  const pick = (q: (typeof qs)[number], label: string) => {
+    const cur = picked[q.question] ?? []
+    const next = { ...picked, [q.question]: q.multiSelect ? (cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]) : [label] }
+    if (instant) submit(next)
+    else setPicked(next)
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {qs.map((q) => (
+        <div key={q.question} className="flex flex-col gap-1">
+          <div>
+            <span className="mr-1 rounded bg-slate-700 px-1 text-xs">{q.header}</span>
+            {q.question}
+          </div>
+          {q.options.map((o) => (
+            <button key={o.label} title={o.description} onClick={() => pick(q, o.label)} className={`${btn} ${picked[q.question]?.includes(o.label) ? 'bg-sky-700' : 'bg-slate-800 hover:bg-slate-700'}`}>
+              {o.label}
+              <span className="block text-xs text-slate-400">{o.description}</span>
+            </button>
+          ))}
+        </div>
+      ))}
+      {!instant && (
+        <button disabled={!qs.every((q) => picked[q.question]?.length)} onClick={() => submit(picked)} className={`${btn} bg-sky-700 hover:bg-sky-600 disabled:opacity-40`}>
+          Answer
+        </button>
+      )}
+    </div>
   )
 }
