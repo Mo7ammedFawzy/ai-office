@@ -12,6 +12,28 @@ export type RunnerEvent =
   | { kind: 'ask'; ask: Ask } // canUseTool is waiting for answer()
   | { kind: 'unask'; id: string } // the SDK gave up on an ask (interrupt)
   | { kind: 'exit'; error?: string } // the query ended without close()
+  | SubEvent
+
+export type SubEvent =
+  | { kind: 'sub-start'; id: string; type: string; description: string; depth: number; parent?: string }
+  | { kind: 'sub-progress'; id: string; summary?: string; tools: number }
+  | { kind: 'sub-end'; id: string; status: 'completed' | 'failed' | 'stopped'; summary: string; tools?: number }
+
+// Subagents only: local_agent tasks that aren't ambient. `known` holds the live ones (later task_* lack task_type).
+export function taskEvent(m: SDKMessage, known: Set<string>): SubEvent | undefined {
+  if (m.type !== 'system') return
+  if (m.subtype === 'task_started') {
+    if (m.task_type !== 'local_agent' || m.ambient) return
+    known.add(m.task_id)
+    return { kind: 'sub-start', id: m.task_id, type: m.subagent_type || 'agent', description: m.description, depth: m.spawn_depth ?? 1, parent: m.parent_task_id }
+  }
+  if (!('task_id' in m) || !known.has(m.task_id)) return
+  if (m.subtype === 'task_progress') return { kind: 'sub-progress', id: m.task_id, summary: m.summary, tools: m.usage.tool_uses }
+  if (m.subtype === 'task_notification') {
+    known.delete(m.task_id)
+    return { kind: 'sub-end', id: m.task_id, status: m.status, summary: m.summary, tools: m.usage?.tool_uses }
+  }
+}
 
 export type Answer = { allow: true; answers?: Record<string, string> } | { allow: false; message: string }
 export type Run = { send(text: string): void; answer(id: string, a: Answer): boolean; interrupt(): Promise<unknown>; close(): void }
@@ -76,8 +98,11 @@ export function run(o: RunOptions, onEvent: (e: RunnerEvent) => void): Run {
     }
   })()
 
+  const tasks = new Set<string>()
   function handle(m: SDKMessage) {
-    if (m.type === 'system' && m.subtype === 'init') emit({ kind: 'session' })
+    const sub = taskEvent(m, tasks)
+    if (sub) emit(sub)
+    else if (m.type === 'system' && m.subtype === 'init') emit({ kind: 'session' })
     else if (m.type === 'system' && m.subtype === 'session_state_changed') {
       if (m.state === 'running') emit({ kind: 'state', state: 'working' })
       if (m.state === 'idle') emit({ kind: 'state', state: 'idle' })
